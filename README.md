@@ -1,46 +1,47 @@
-# DistributedNeuralNetUDP
+# DNN-UDP-Distributed
 
 Distributed Neural Network (DNN) project developed using Python and C++ with a custom UDP-based Reliable Data Transfer (RDT) protocol.
+
+---
+# Team Members
+
+- Enzo Aldhair Fuentes Apaza
 
 ---
 
 # Overview
 
-This project implements a distributed neural network system where neural processing is executed in parallel across multiple distributed nodes using UDP communication.
+This project implements a distributed neural network system where the neural network is executed in Python while the distributed communication layer is implemented in C++.
 
-The neural network logic is implemented in Python, while the distributed communication layer and networking protocol are implemented in C++.
+The Main Server acts as an intermediary between the Python Neural Network and multiple Slave Servers. The neural network never communicates directly with the slave nodes.
 
-The system uses a custom RDT protocol over UDP including:
+The Main Server:
+- Receives matrices and weights from the Python Neural Network
+- Distributes workloads across slave nodes
+- Collects processed matrices
+- Computes the average of returned weights
+- Updates the global weights
+- Sends updated data back to the Python Neural Network
 
-- ACK packets
-- Sequence numbers
-- Timeout handling
-- Corrupted datagram detection using hashes
-- Lost datagram recovery
-- Retransmission system
-
----
-
-# Main Idea
-
-The project distributes matrix computations of a neural network across multiple slave nodes.
-
-Each slave node processes part of the computation and sends results back to the main server.
-
-The main server:
-1. Collects partial matrices
-2. Computes the average of resulting weights
-3. Updates the global weights
-4. Synchronizes updated weights with Python neural modules
+Communication between the Main Server and Slave Servers is performed using a custom UDP-based RDT protocol.
 
 ---
 
 # System Architecture
 
 ```text
+                  +--------------------------------+
+                  |     Python Neural Network      |
+                  |      Training / Inference      |
+                  +---------------+----------------+
+                                  |
+                                  |
+                         Local Interface/API
+                                  |
+                                  v
                 +----------------------------------+
                 |          MAIN SERVER             |
-                |        C++ UDP Coordinator       |
+                |     C++ UDP Coordinator          |
                 +----------------+-----------------+
                                  |
         -------------------------------------------------------
@@ -48,12 +49,28 @@ The main server:
 +---------------+      +---------------+       +---------------+
 | Slave Node #1 |      | Slave Node #2 |       | Slave Node #3 |
 | C++ UDP RDT   |      | C++ UDP RDT   |       | C++ UDP RDT   |
-+-------+-------+      +-------+-------+       +-------+-------+
-        |                      |                       |
-        ------------------------------------------------
-                                 |
-                         Python Neural Network
++---------------+      +---------------+       +---------------+
+
 ```
+
+---
+
+# Main Idea
+
+The neural network logic is implemented entirely in Python.
+
+The distributed system is implemented in C++.
+
+The Main Server receives matrix operations from the neural network and distributes the computational workload among multiple slave nodes using UDP communication.
+
+Each slave node processes part of the matrix computation and sends results back to the Main Server.
+
+The Main Server:
+1. Receives partial results
+2. Merges matrices
+3. Computes average weights
+4. Updates global parameters
+5. Sends updated weights back to Python
 
 ---
 
@@ -65,13 +82,13 @@ The main server:
 
 ## Networking
 - UDP sockets
-- Custom RDT protocol
+- Custom Reliable Data Transfer (RDT)
 
 ## AI Concepts
 - Distributed Neural Networks
-- Parallel matrix processing
+- Parallel matrix computation
 - Weight synchronization
-- Gradient averaging
+- Distributed processing
 
 ---
 
@@ -80,29 +97,29 @@ The main server:
 ## Neural Network
 - 3-layer neural network
 - Minimum 200 neurons per layer
-- Matrix-based computation
+- Matrix-based operations
 - Forward propagation
 - Weight updating
 
-## Distributed Protocol
-- UDP communication
-- Reliable Data Transfer (RDT)
-- Fixed timeout strategy
-- Packet retransmission
-- Sequence numbering
-- ACK responses
-- Datagram integrity verification using hashes
+## Distributed Communication
+- Main Server distributes computations
+- Slave nodes process assigned workloads
+- Parallel matrix processing
+- Result synchronization
 
-## Error Handling
-- Corrupted datagram detection
-- Lost packet recovery
-- Timeout-based retransmission
+## UDP RDT Protocol
+- ACK packets
+- Sequence numbers
+- Fixed timeout
+- Packet retransmission
+- Corrupted datagram detection using hashes
+- Lost datagram recovery
 
 ---
 
 # Custom UDP Protocol
 
-Each datagram includes:
+Each datagram contains:
 
 ```text
 | SEQ# | TYPE | HASH | DATA |
@@ -111,12 +128,12 @@ Each datagram includes:
 ## Packet Types
 - DATA
 - ACK
-- RETRANSMIT
 - UPDATE
+- RETRANSMIT
 
-## Reliability Mechanisms
+## Reliability Features
 - Timeout detection
-- Packet retransmission
+- Retransmission mechanism
 - Integrity validation
 - Sequence synchronization
 
@@ -131,7 +148,7 @@ DNN-UDP-Distributed/
 │   ├── protocol_documentation/
 │   ├── technical_report/
 │   ├── architecture/
-│   └── research_timeout/
+│   └── timeout_research/
 │
 ├── demo/
 │   ├── screenshots/
@@ -146,7 +163,7 @@ DNN-UDP-Distributed/
 │
 ├── python/
 │   ├── neural_network/
-│   ├── matrix_processing/
+│   ├── matrix_operations/
 │   └── training/
 │
 └── README.md
@@ -156,7 +173,7 @@ DNN-UDP-Distributed/
 
 # Timeout Strategy
 
-The timeout value is fixed and selected after network behavior research and testing.
+The timeout value is fixed and selected based on network testing and research.
 
 The timeout mechanism is responsible for:
 - Detecting lost packets
@@ -169,17 +186,18 @@ The timeout mechanism is responsible for:
 
 ## Protocol Documentation
 Complete explanation of:
-- Datagram format
+- Datagram structure
 - ACK system
-- Sequence control
-- Error handling
-- Timeout mechanism
+- Sequence numbering
+- Timeout handling
+- Error detection
+- Packet retransmission
 
 ## Technical Report
 Small academic report including:
 - Objectives
-- Architecture
 - Methodology
+- System architecture
 - Results
 - Conclusions
 
@@ -195,15 +213,10 @@ Includes:
 
 - Implement a Distributed Neural Network (DNN)
 - Develop a custom UDP-based RDT protocol
-- Apply distributed processing concepts
-- Synchronize neural network weights across nodes
+- Apply distributed systems concepts
+- Parallelize matrix computations
+- Synchronize neural network weights
 - Integrate Python AI modules with C++ networking systems
-
----
-
-# Team Members
-
-- Enzo Aldhair Fuentes Apaza
 
 ---
 
@@ -212,8 +225,7 @@ Includes:
 - Dynamic timeout calculation
 - GPU acceleration
 - Adaptive load balancing
-- Multi-machine deployment
-- Real-time monitoring dashboard
+- Real-time monitoring
 - Distributed training optimization
 
 ---
