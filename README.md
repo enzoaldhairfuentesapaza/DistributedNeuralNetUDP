@@ -6,6 +6,7 @@ Distributed Neural Network (DNN) project developed using Python and C++ with a c
 # Team Members
 
 - Enzo Aldhair Fuentes Apaza
+- Iván Matthías Sardón Medina
 
 ---
 
