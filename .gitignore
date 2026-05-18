@@ -1,0 +1,11 @@
+.DS_Store
+
+# Compiled binaries
+*.o
+*.out
+*.exe
+*.dSYM/
+
+# Project binaries
+server
+worker
