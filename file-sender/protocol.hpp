@@ -91,7 +91,7 @@ inline std::vector<uint8_t> serialize_packet(const Packet& packet) {
     write4bytes(buffer, 24, 0);
     std::copy(packet.payload.begin(), packet.payload.end(), buffer.begin() + HEADER_SIZE);
 
-    // CRC uses the packet with the CRC field temporarily set to zero.
+
     write4bytes(buffer, 24, crc32(buffer.data(), buffer.size()));
     return buffer;
 }
