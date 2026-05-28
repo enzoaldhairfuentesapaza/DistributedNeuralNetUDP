@@ -14,19 +14,20 @@ Distributed Neural Network (DNN) project developed using Python and C++ with a c
 
 # Overview
 
-This project implements a distributed neural network system where the neural network is executed in Python while the distributed communication layer is implemented in C++.
+This project implements a distributed neural network system where the neural network logic runs in Python and the distributed communication layer is implemented in C++.
 
-The Main Server acts as an intermediary between the Python Neural Network and multiple Slave Servers. The neural network never communicates directly with the slave nodes.
+The Main Server acts as the coordinator between the Python Neural Network and 10 Worker nodes. The Python training code does not communicate directly with the workers; it calls the C++ communication library through a local Python/C++ interface.
 
 The Main Server:
-- Receives matrices and weights from the Python Neural Network
-- Distributes workloads across slave nodes
-- Collects processed matrices
-- Computes the average of returned weights
-- Updates the global weights
-- Sends updated data back to the Python Neural Network
+- Selects one global training batch
+- Executes the forward pass in the master process
+- Builds one serialized `WORK_ASSIGNMENT` object for each worker
+- Sends each object through the UDP RDT layer
+- Receives one serialized `GRADIENT_RESULT` object from each worker
+- Averages the gradients returned by the workers and the master partition
+- Updates the global neural network weights in Python
 
-Communication between the Main Server and Slave Servers is performed using a custom UDP-based RDT protocol.
+Communication between the Main Server and Worker nodes is performed using a custom UDP-based RDT protocol based on pure Go-Back-N with cumulative ACKs.
 
 ---
 
@@ -44,13 +45,13 @@ Communication between the Main Server and Slave Servers is performed using a cus
                                   v
                 +----------------------------------+
                 |          MAIN SERVER             |
-                |     C++ UDP Coordinator          |
+                | Python + C++ UDP Coordinator     |
                 +----------------+-----------------+
                                  |
         -------------------------------------------------------
         |                        |                           |
 +---------------+      +---------------+       +---------------+
-| Slave Node #1 |      | Slave Node #2 |       | Slave Node #3 |
+| Worker Node #1|      | Worker Node #2|       | Worker Node #10|
 | C++ UDP RDT   |      | C++ UDP RDT   |       | C++ UDP RDT   |
 +---------------+      +---------------+       +---------------+
 
@@ -60,20 +61,25 @@ Communication between the Main Server and Slave Servers is performed using a cus
 
 # Main Idea
 
-The neural network logic is implemented entirely in Python.
+The neural network logic is implemented in Python.
 
-The distributed system is implemented in C++.
+The distributed communication system is implemented in C++ and exposed to Python using `pybind11`.
 
-The Main Server receives matrix operations from the neural network and distributes the computational workload among multiple slave nodes using UDP communication.
+Training uses one global batch. The master divides that batch into 11 partitions:
 
-Each slave node processes part of the matrix computation and sends results back to the Main Server.
+- Partition 0 stays in the master
+- Partitions 1 to 10 are assigned to the 10 workers
 
-The Main Server:
-1. Receives partial results
-2. Merges matrices
-3. Computes average weights
-4. Updates global parameters
-5. Sends updated weights back to Python
+The forward pass is performed only in the master. After the forward pass, the master sends each worker a serialized `WORK_ASSIGNMENT` object containing everything needed to perform local backpropagation correctly, including its batch partition, weights, activations, preactivations, labels, loss derivatives, and metadata.
+
+Each worker:
+1. Receives and reconstructs its `WORK_ASSIGNMENT`
+2. Deserializes the object
+3. Runs local backpropagation without running its own forward pass
+4. Builds a `GRADIENT_RESULT` object
+5. Sends the object back to the master
+
+The Main Server averages the gradients from the 10 workers and its own local partition, then Python updates the global weights.
 
 ---
 
@@ -89,8 +95,9 @@ The Main Server:
 
 ## AI Concepts
 - Distributed Neural Networks
-- Parallel matrix computation
-- Weight synchronization
+- Distributed backpropagation
+- Gradient averaging
+- Weight updating
 - Distributed processing
 
 ---
@@ -98,47 +105,77 @@ The Main Server:
 # Features
 
 ## Neural Network
-- 3-layer neural network
-- Minimum 200 neurons per layer
-- Matrix-based operations
-- Forward propagation
-- Weight updating
+- 4 hidden layers
+- 200 neurons per hidden layer
+- One global training batch
+- Forward pass only in the master
+- Distributed backpropagation across 1 master and 10 workers
+- Gradient averaging before global weight update
 
 ## Distributed Communication
-- Main Server distributes computations
-- Slave nodes process assigned workloads
-- Parallel matrix processing
-- Result synchronization
+- Main Server distributes serialized `WORK_ASSIGNMENT` objects
+- Worker nodes reconstruct assignments and compute local gradients
+- Worker nodes return serialized `GRADIENT_RESULT` objects
+- RDT transports opaque serialized objects, not individual tensors
+- Tensor semantics are handled by the application layer after deserialization
 
 ## UDP RDT Protocol
-- ACK packets
+- Pure Go-Back-N over UDP
+- Cumulative ACK packets
 - Sequence numbers
-- Fixed timeout
+- Fixed initial timeout
 - Packet retransmission
-- Corrupted datagram detection using hashes
-- Lost datagram recovery
+- CRC32 corruption detection over header and valid payload
+- Lost datagram recovery through timeout and retransmission
+- `ACK_NONE = 0xFFFFFFFF` for the initial state before any valid DATA packet is received
 
 ---
 
 # Custom UDP Protocol
 
-Each datagram contains:
+The RDT layer transports serialized application objects as opaque byte streams. It does not interpret tensors, weights, activations, labels, or gradients.
+
+Each UDP datagram has a maximum size of 512 bytes:
 
 ```text
-| SEQ# | TYPE | HASH | DATA |
+Header:  36 bytes
+Payload: up to 476 bytes
 ```
 
 ## Packet Types
+- START
 - DATA
 - ACK
-- UPDATE
-- RETRANSMIT
+- END
+
+## Application Object Types
+- `WORK_ASSIGNMENT`: sent by the master to one worker
+- `GRADIENT_RESULT`: sent by one worker to the master
+- `CONTROL`: reserved for future application-level control messages
+
+## Datagram Header Fields
+- Packet type
+- Sequence number
+- ACK number
+- Transfer ID
+- Sender ID
+- Receiver ID
+- Object type
+- Total serialized object size
+- Fragment number
+- Total fragments
+- Valid payload size
+- CRC32
 
 ## Reliability Features
+- Go-Back-N sliding window
+- Cumulative ACKs
 - Timeout detection
 - Retransmission mechanism
-- Integrity validation
+- CRC32 integrity validation
 - Sequence synchronization
+- Duplicate and out-of-order packet detection
+- No NACK packets
 
 ---
 
@@ -147,20 +184,15 @@ Each datagram contains:
 ```text
 DNN-UDP-Distributed/
 │
-├── protocol_documentation/
-│
-├── cpp/
-│   ├── server/
-│   ├── worker/
-│   ├── protocol/
-│
-├── python/
-│   ├── neural_network/
-│   ├── matrix_operations/
-│   └── training/
-│
+├── ManualProtocolo.tex
+├── Manual del Protocolo.pdf
+├── protocol.hpp
+├── basicClasificacion.py
+├── Dataset of Diabetes.csv
 └── README.md
 ```
+
+The implementation is expected to keep the neural network/training logic in Python and the UDP/RDT communication primitives in C++.
 
 ---
 
@@ -182,9 +214,12 @@ Complete explanation of:
 - Datagram structure
 - ACK system
 - Sequence numbering
+- Go-Back-N window behavior
 - Timeout handling
 - Error detection
 - Packet retransmission
+- Object serialization model
+- `WORK_ASSIGNMENT` and `GRADIENT_RESULT` application objects
 
 ## Technical Report
 Small academic report including:
@@ -207,8 +242,8 @@ Includes:
 - Implement a Distributed Neural Network (DNN)
 - Develop a custom UDP-based RDT protocol
 - Apply distributed systems concepts
-- Parallelize matrix computations
-- Synchronize neural network weights
+- Distribute backpropagation over multiple workers
+- Average gradients and update global neural network weights
 - Integrate Python AI modules with C++ networking systems
 
 ---
