@@ -147,22 +147,12 @@ Each datagram contains:
 ```text
 DNN-UDP-Distributed/
 │
-├── docs/
-│   ├── protocol_documentation/
-│   ├── technical_report/
-│   ├── architecture/
-│   └── timeout_research/
-│
-├── demo/
-│   ├── screenshots/
-│   ├── videos/
-│   └── execution_examples/
+├── protocol_documentation/
 │
 ├── cpp/
-│   ├── main_server/
-│   ├── slave_server/
+│   ├── server/
+│   ├── worker/
 │   ├── protocol/
-│   └── udp_rdt/
 │
 ├── python/
 │   ├── neural_network/

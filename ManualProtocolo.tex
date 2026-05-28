@@ -23,13 +23,13 @@
 
 \section{Descripción General}
 
-El objetivo del proyecto es implementar un sistema de Red Neuronal Distribuida (DNN) donde el aprendizaje se reparte entre varias computadoras o terminales y el servidor principal combina los resultados mediante el promedio de las matrices de pesos.
+El objetivo del proyecto es implementar un sistema de Red Neuronal Distribuida (DNN) donde el cálculo de backpropagation se reparte entre varias computadoras o terminales y el servidor principal combina los resultados mediante el promedio de gradientes.
 
 \begin{itemize}
 \item La red neuronal se define y entrena en Python.
 \item La ejecución principal se inicia desde un archivo \texttt{.py}.
 \item Python llama a una biblioteca distribuida en C++ mediante \texttt{pybind11}.
-\item La biblioteca C++ implementa la comunicación UDP y el protocolo RDT.
+\item La biblioteca C++ implementa la serialización de objetos, la comunicación UDP y el protocolo RDT.
 \item La comunicación entre nodos utiliza UDP.
 \item La confiabilidad se implementa manualmente mediante un protocolo RDT (Reliable Data Transfer) basado en Go-Back-N puro con ACK acumulativo.
 \end{itemize}
@@ -42,7 +42,7 @@ La arquitectura del sistema está compuesta por:
 \item Un programa o módulo de distribución de datos invocado por el servidor principal
 \end{itemize}
 
-El servidor principal divide el dataset en 11 partes iguales: una parte queda en el master y las otras 10 partes se envían a los workers. Luego distribuye las matrices de pesos de la red, recibe las matrices entrenadas por cada nodo y actualiza su red neuronal principal calculando el promedio elemento a elemento.
+El servidor principal toma un único batch global y lo divide en 11 partes iguales: una parte queda en el master y las otras 10 partes se envían a los workers. El forward pass se ejecuta únicamente en el master. Luego el master construye un objeto serializado \texttt{WORK\_ASSIGNMENT} para cada worker, que contiene su partición del batch y todos los tensores necesarios para que pueda ejecutar backpropagation correctamente. Finalmente, recibe un objeto \texttt{GRADIENT\_RESULT} desde cada worker, promedia los gradientes elemento a elemento y actualiza los pesos de la red neuronal principal.
 
 \section{Configuración de la Red Neuronal}
 
@@ -50,7 +50,7 @@ La configuración de la red neuronal es la siguiente:
 
 \begin{table}[h]
 \centering
-\begin{tabular}{|l|l|}
+\begin{tabular}{|p{4.5cm}|p{9cm}|}
 \hline
 Parámetro & Valor \\
 \hline
@@ -58,27 +58,29 @@ Capas ocultas & 4 \\
 \hline
 Neuronas por capa oculta & 200 \\
 \hline
-Matrices de pesos distribuidas & 4 matrices completas \\
+Matrices base de pesos & 4 matrices completas \\
 \hline
 Tamaño de cada matriz oculta & 200x200 \\
 \hline
-Batch size & 1 \\
+Número de batches & 1 batch global \\
 \hline
-Número de batches distribuidos & 1 \\
+División del batch & 11 particiones \\
 \hline
 Épocas & 1 \\
 \hline
-Particiones del dataset & 11 partes iguales \\
+Nodos de backpropagation & 1 master + 10 workers \\
 \hline
-Nodos de entrenamiento & 1 master + 10 workers \\
+Objeto master $\rightarrow$ worker & \texttt{WORK\_ASSIGNMENT}: partición del batch, pesos, activaciones, preactivaciones, etiquetas, derivadas necesarias y metadatos \\
+\hline
+Objeto worker $\rightarrow$ master & \texttt{GRADIENT\_RESULT}: gradientes calculados por el worker y metadatos de reconstrucción \\
 \hline
 Protocolo de comunicación & UDP \\
 \hline
 Capa de confiabilidad & Go-Back-N RDT con ACK acumulativo \\
 \hline
-Tipo de dato & float32 \\
+Tipo de dato principal & float32 \\
 \hline
-Formato binario de matrices & little-endian \\
+Formato binario de tensores & little-endian \\
 \hline
 Endianness del protocolo & big-endian / network byte order \\
 \hline
@@ -124,11 +126,14 @@ Python será responsable de:
 \item Cargar el dataset
 \item Definir la red neuronal
 \item Ejecutar la lógica de entrenamiento de la red neuronal
-\item Ejecutar el forward pass inicial en el master
-\item Ejecutar backpropagation para generar o actualizar las matrices de pesos por capa
+\item Seleccionar el único batch global de entrenamiento
+\item Ejecutar el forward pass únicamente en el master
+\item Preparar las particiones del batch y los tensores intermedios necesarios para backpropagation
+\item Construir los objetos \texttt{WORK\_ASSIGNMENT} que serán enviados a los workers
+\item Ejecutar backpropagation local en el master sobre la partición 0
 \item Llamar a la biblioteca distribuida en C++ desde el archivo principal \texttt{.py}
-\item Recibir matrices de pesos promediadas
-\item Actualizar la red neuronal principal con los pesos combinados
+\item Recibir gradientes promediados
+\item Actualizar la red neuronal principal usando los gradientes combinados
 \end{itemize}
 
 La integración entre Python y C++ se realizará mediante pybind11.
@@ -138,19 +143,20 @@ La integración entre Python y C++ se realizará mediante pybind11.
 El servidor principal será responsable de:
 
 \begin{itemize}
-\item Invocar el programa de distribución del dataset
-\item Dividir el dataset en 11 partes iguales
-\item Mantener una partición local para el master
+\item Invocar el programa de distribución del batch
+\item Dividir el batch global en 11 partes iguales
+\item Mantener la partición 0 para el master
 \item Enviar las 10 particiones restantes a los workers
-\item Recibir desde Python las 4 matrices completas de pesos
-\item Serializar particiones del dataset y matrices de pesos
+\item Recibir desde Python los objetos \texttt{WORK\_ASSIGNMENT} serializables
+\item Serializar cada objeto de aplicación como una secuencia binaria opaca para la capa RDT
 \item Construir paquetes UDP
 \item Administrar ventana Go-Back-N
-\item Enviar matrices y datos a los workers
+\item Enviar objetos serializados a los workers
 \item Administrar ACK y retransmisiones
-\item Recibir matrices entrenadas desde los workers
-\item Promediar sus propias matrices con las matrices recibidas
-\item Reconstruir las 4 matrices finales de la red neuronal principal
+\item Recibir objetos \texttt{GRADIENT\_RESULT} desde los workers
+\item Reentregar a Python los gradientes contenidos en los objetos reconstruidos
+\item Promediar los gradientes del master con los gradientes recibidos
+\item Retornar los gradientes promediados hacia Python para actualizar los pesos
 \end{itemize}
 
 \subsection{Workers}
@@ -163,11 +169,11 @@ Los workers serán responsables de:
 \item Reconstruir fragmentos en orden
 \item Detectar pérdidas y duplicados
 \item Descartar paquetes fuera de orden
-\item Recibir su partición del dataset
-\item Recibir las 4 matrices completas de pesos
-\item Mantener la misma arquitectura de red neuronal que el master
-\item Entrenar localmente durante 1 época con batch size 1
-\item Retornar al master las 4 matrices entrenadas
+\item Recibir y reconstruir un objeto \texttt{WORK\_ASSIGNMENT}
+\item Extraer de ese objeto su partición del batch, pesos, activaciones, preactivaciones, etiquetas, derivadas y metadatos necesarios
+\item Ejecutar backpropagation local sin realizar forward pass propio
+\item Calcular gradientes para su partición
+\item Retornar al master un objeto \texttt{GRADIENT\_RESULT} con los gradientes calculados
 \end{itemize}
 
 \section{Transferencia Confiable de Datos (RDT)}
@@ -226,7 +232,7 @@ Endianness del header & Big-endian / network byte order \\
 \hline
 Tamaño máximo del datagrama UDP & 512 bytes \\
 \hline
-Tamaño máximo del payload & 484 bytes \\
+Tamaño máximo del payload & 476 bytes \\
 \hline
 Tamaño inicial de ventana & 8 paquetes \\
 \hline
@@ -236,18 +242,20 @@ Máximo de reintentos & 5 \\
 \hline
 Primer número de secuencia DATA & 0 \\
 \hline
+ACK inicial sin paquetes válidos & ACK\_NONE = 0xFFFFFFFF \\
+\hline
 CRC & CRC32 sobre header y payload válido \\
 \hline
 \end{tabular}
 \end{table}
 
-Todos los campos numéricos del encabezado del protocolo serán serializados en big-endian, también conocido como network byte order. Las matrices, por otro lado, mantendrán su representación interna como arreglos de tipo float32 en formato little-endian.
+Todos los campos numéricos del encabezado del protocolo serán serializados en big-endian, también conocido como network byte order. El payload será tratado por la capa RDT como una secuencia opaca de bytes. La interpretación de tensores, dtype, dimensiones y metadatos pertenecerá a la capa de aplicación contenida dentro del objeto serializado.
 
 Si un paquete o conjunto de paquetes supera el máximo de reintentos definido, la transferencia se considerará fallida y será cancelada.
 
 \section{Formato del Paquete UDP}
 
-Cada datagrama UDP tendrá un tamaño máximo de 512 bytes.
+Cada datagrama UDP tendrá un tamaño máximo de 512 bytes. El encabezado del protocolo tendrá tamaño fijo de 36 bytes y el payload podrá contener hasta 476 bytes del objeto serializado.
 
 \subsection{Estructura del paquete}
 
@@ -263,19 +271,25 @@ Número de secuencia & 4 bytes \\
 \hline
 Número ACK & 4 bytes \\
 \hline
-ID de matriz & 4 bytes \\
+ID de transferencia & 4 bytes \\
+\hline
+ID del emisor & 2 bytes \\
+\hline
+ID del receptor & 2 bytes \\
+\hline
+Tipo de objeto & 1 byte \\
+\hline
+Tamaño total del objeto & 4 bytes \\
 \hline
 Número de fragmento & 4 bytes \\
 \hline
 Total de fragmentos & 4 bytes \\
 \hline
-Tipo de contenido & 1 byte \\
-\hline
 Tamaño útil del payload & 2 bytes \\
 \hline
 CRC32 & 4 bytes \\
 \hline
-Payload & 484 bytes \\
+Payload & 476 bytes \\
 \hline
 \end{tabular}
 \end{table}
@@ -288,21 +302,27 @@ Payload & 484 bytes \\
 
 \item \textbf{Número de secuencia:} Identifica el orden lógico del paquete dentro de la transferencia. Permite detectar pérdidas, duplicados y mantener el orden correcto.
 
-\item \textbf{Número ACK:} Indica el último número de secuencia recibido correctamente y en orden. Este campo se utiliza principalmente en paquetes ACK. Por ejemplo, si el receptor recibió correctamente los paquetes 0, 1 y 2, enviará un ACK con valor 2.
+\item \textbf{Número ACK:} Indica el último número de secuencia recibido correctamente y en orden. Este campo se utiliza principalmente en paquetes ACK. Por ejemplo, si el receptor recibió correctamente los paquetes 0, 1 y 2, enviará un ACK con valor 2. Si todavía no recibió ningún DATA válido, utilizará el valor especial ACK\_NONE.
 
-\item \textbf{ID de matriz:} Identifica la matriz de pesos asociada al paquete. Cuando el paquete transporta una partición del dataset, este campo identifica la partición.
+\item \textbf{ID de transferencia:} Identifica una transferencia lógica completa y actúa como ID del objeto serializado. Todos los fragmentos que pertenecen al mismo objeto utilizan el mismo ID de transferencia.
 
-\item \textbf{Número de fragmento:} Indica la posición del fragmento dentro de la matriz.
+\item \textbf{ID del emisor:} Identifica al nodo que envía la transferencia. El master utiliza el ID 0 y los workers utilizan IDs del 1 al 10.
 
-\item \textbf{Total de fragmentos:} Permite reconstruir completamente la matriz original.
+\item \textbf{ID del receptor:} Identifica al nodo destino. Este campo evita mezclar respuestas o asignaciones cuando varias transferencias se ejecutan en paralelo.
 
-\item \textbf{Tipo de contenido:} Define si el payload contiene una partición del dataset, matrices de pesos iniciales, matrices entrenadas o datos de control.
+\item \textbf{Tipo de objeto:} Define el tipo del objeto serializado transportado por la transferencia, por ejemplo \texttt{WORK\_ASSIGNMENT} o \texttt{GRADIENT\_RESULT}.
 
-\item \textbf{Tamaño útil del payload:} Indica cuántos bytes válidos contiene el payload. Este valor no puede superar 484 bytes.
+\item \textbf{Tamaño total del objeto:} Indica el tamaño total en bytes del objeto serializado antes de la fragmentación. Permite validar la reconstrucción final.
+
+\item \textbf{Número de fragmento:} Indica la posición del fragmento dentro del objeto transmitido.
+
+\item \textbf{Total de fragmentos:} Permite reconstruir completamente el objeto original.
+
+\item \textbf{Tamaño útil del payload:} Indica cuántos bytes válidos contiene el payload. Este valor no puede superar 476 bytes.
 
 \item \textbf{CRC32:} Código utilizado para detectar corrupción en el encabezado y en el payload. Para calcularlo, el campo CRC32 se coloca temporalmente en cero y luego se calcula el CRC32 sobre todo el encabezado más el payload válido.
 
-\item \textbf{Payload:} Contiene fragmentos serializados de matrices.
+\item \textbf{Payload:} Contiene un fragmento de bytes del objeto serializado. Para la capa RDT, este contenido es opaco.
 
 \end{itemize}
 
@@ -325,24 +345,37 @@ END & 0x04 & Fin de transmisión \\
 \end{tabular}
 \end{table}
 
-\section{Tipos de Contenido}
+\section{Tipos de Objeto}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{|p{3.5cm}|c|p{7.2cm}|}
+\begin{tabular}{|p{4.8cm}|c|p{6.7cm}|}
 \hline
-Contenido & Valor numérico & Significado \\
+Objeto & Valor numérico & Significado \\
 \hline
-DATASET & 0x01 & Partición del dataset asignada a un nodo \\
+WORK\_ASSIGNMENT & 0x01 & Objeto enviado por el master a un worker. Contiene la partición del batch y todos los tensores necesarios para backpropagation. \\
 \hline
-WEIGHTS & 0x02 & Matrices completas de pesos enviadas por el master \\
+GRADIENT\_RESULT & 0x02 & Objeto enviado por un worker al master. Contiene los gradientes calculados y metadatos de reconstrucción. \\
 \hline
-TRAINED & 0x03 & Matrices de pesos entrenadas retornadas por un nodo \\
+CONTROL & 0x03 & Objeto de control para futuras extensiones del protocolo de aplicación. \\
 \hline
 NONE & 0x00 & Sin operación asociada \\
 \hline
 \end{tabular}
 \end{table}
+
+\section{Capa de Aplicación y Objetos Serializados}
+
+El protocolo RDT no interpretará tensores, pesos, activaciones, etiquetas ni gradientes. Su responsabilidad será transportar de forma confiable un objeto serializado completo, identificado por un único ID de transferencia.
+
+La semántica de los datos estará definida en una capa superior de aplicación:
+
+\begin{itemize}
+\item \texttt{WORK\_ASSIGNMENT}: objeto creado por el master para un worker específico. Incluye la partición del batch global, pesos, activaciones, preactivaciones, etiquetas, derivadas de pérdida y metadatos necesarios para ejecutar backpropagation local.
+\item \texttt{GRADIENT\_RESULT}: objeto creado por un worker para el master. Incluye los gradientes calculados sobre su partición y los metadatos necesarios para validar forma, dtype, capa y parámetro asociado.
+\end{itemize}
+
+Cada objeto será serializado por la biblioteca C++ en una secuencia binaria. Luego el protocolo RDT fragmentará esa secuencia en paquetes DATA, los transmitirá usando Go-Back-N y reconstruirá exactamente el mismo objeto en el receptor. Una vez reconstruido, la capa de aplicación deserializará el objeto y procesará sus tensores internos.
 
 \section{Campos Usados por Cada Tipo de Paquete}
 
@@ -352,13 +385,13 @@ No todos los tipos de paquete utilizan todos los campos del encabezado. Los camp
 \hline
 Tipo de paquete & Campos principales utilizados \\
 \hline
-START & Tipo de paquete, ID de matriz, total de fragmentos, tipo de contenido, CRC32 \\
+START & Tipo de paquete, ID de transferencia, ID del emisor, ID del receptor, tipo de objeto, tamaño total del objeto, total de fragmentos, CRC32 \\
 \hline
-DATA & Tipo de paquete, número de secuencia, ID de matriz, número de fragmento, total de fragmentos, tipo de contenido, tamaño útil del payload, CRC32, payload \\
+DATA & Tipo de paquete, número de secuencia, ID de transferencia, ID del emisor, ID del receptor, tipo de objeto, tamaño total del objeto, número de fragmento, total de fragmentos, tamaño útil del payload, CRC32, payload \\
 \hline
-ACK & Tipo de paquete, número ACK, ID de matriz, CRC32 \\
+ACK & Tipo de paquete, número ACK, ID de transferencia, ID del emisor, ID del receptor, CRC32 \\
 \hline
-END & Tipo de paquete, número de secuencia, número ACK, ID de matriz, CRC32 \\
+END & Tipo de paquete, número de secuencia, número ACK, ID de transferencia, ID del emisor, ID del receptor, CRC32 \\
 \hline
 \end{longtable}
 
@@ -372,7 +405,7 @@ Para realizar el cálculo, el campo CRC32 se coloca temporalmente en cero. Luego
 \text{CRC32} = CRC32(\text{header con CRC32 = 0} + \text{payload válido})
 \]
 
-Esto permite detectar corrupción no solo en los datos de la matriz, sino también en campos críticos como el tipo de paquete, número de secuencia, número ACK, ID de matriz, número de fragmento, total de fragmentos, tipo de contenido y tamaño útil del payload.
+Esto permite detectar corrupción no solo en el contenido transmitido, sino también en campos críticos como el tipo de paquete, número de secuencia, número ACK, ID de transferencia, ID del emisor, ID del receptor, tipo de objeto, tamaño total del objeto, número de fragmento, total de fragmentos y tamaño útil del payload.
 
 El receptor recalculará el CRC32 utilizando el mismo procedimiento y lo comparará con el valor recibido.
 
@@ -391,7 +424,7 @@ El receptor recalculará el CRC32 utilizando el mismo procedimiento y lo compara
 \item El paquete se considera corrupto.
 \item El paquete completo se descarta.
 \item No se actualiza el número de secuencia esperado.
-\item El receptor reenvía el ACK acumulativo del último paquete recibido correctamente en orden.
+\item El receptor reenvía el ACK acumulativo del último paquete recibido correctamente en orden. Si todavía no recibió ningún DATA válido, responde con ACK\_NONE.
 \item No se envía NACK, porque el protocolo utiliza Go-Back-N puro.
 \end{itemize}
 
@@ -407,8 +440,10 @@ El campo ACK tendrá semántica acumulativa:
 
 \begin{itemize}
 \item Un ACK con valor $n$ indica que todos los paquetes desde el inicio hasta el paquete $n$ fueron recibidos correctamente y en orden.
+\item Un ACK con valor ACK\_NONE indica que todavía no se recibió ningún paquete DATA válido de la transferencia.
+\item ACK\_NONE es un valor centinela y no se interpreta como un número de secuencia mayor que los demás.
 \item Si el receptor espera el paquete $k$ pero recibe un paquete distinto, lo descarta y vuelve a enviar el ACK del último paquete válido en orden.
-\item Si se pierde un ACK, el emisor podrá continuar si recibe un ACK posterior con un número mayor.
+\item Si se pierde un ACK, el emisor podrá continuar si recibe un ACK posterior válido con un número mayor.
 \end{itemize}
 
 Los números de secuencia permitirán:
@@ -479,62 +514,64 @@ FAILED & La transferencia fue cancelada por error de protocolo o fallo de comuni
 
 \section{Secuencia de Comunicación}
 
-La transferencia confiable seguirá el siguiente flujo:
+La transferencia confiable seguirá el siguiente flujo. El mismo procedimiento se utilizará en ambos sentidos: master a worker para enviar objetos \texttt{WORK\_ASSIGNMENT}, y worker a master para devolver objetos \texttt{GRADIENT\_RESULT}. En cada transferencia, quien envía el objeto serializado actúa como emisor Go-Back-N y quien lo recibe actúa como receptor.
 
 \begin{enumerate}
 
-\item El servidor principal envía un paquete START.
+\item El emisor envía un paquete START.
 
-\item El worker responde con ACK.
+\item El receptor responde con ACK.
 
-\item El servidor principal comienza el envío continuo de paquetes DATA dentro de la ventana Go-Back-N.
+\item El emisor comienza el envío continuo de paquetes DATA dentro de la ventana Go-Back-N.
 
-\item El worker verifica el CRC32 calculado sobre encabezado y payload.
+\item El receptor verifica el CRC32 calculado sobre encabezado y payload.
 
-\item Si el CRC32 es válido, el worker verifica el número de secuencia.
+\item Si el CRC32 es válido, el receptor verifica el número de secuencia.
 
 \item Si el paquete recibido es exactamente el paquete esperado:
 \begin{itemize}
-\item El worker acepta el paquete.
+\item El receptor acepta el paquete.
 \item Actualiza el último número de secuencia recibido correctamente en orden.
 \item Envía un ACK acumulativo con ese número de secuencia.
 \end{itemize}
 
 \item Si el paquete recibido está duplicado o fuera de orden:
 \begin{itemize}
-\item El worker descarta el paquete.
-\item El worker reenvía un ACK acumulativo con el último número de secuencia recibido correctamente en orden.
+\item El receptor descarta el paquete.
+\item El receptor reenvía un ACK acumulativo con el último número de secuencia recibido correctamente en orden.
+\item Si todavía no existe un paquete válido confirmado, el receptor responde con ACK\_NONE.
 \end{itemize}
 
 \item Si un paquete llega corrupto:
 \begin{itemize}
-\item El worker descarta el paquete completo.
-\item El worker no avanza su número de secuencia esperado.
-\item El worker puede reenviar el último ACK acumulativo válido.
+\item El receptor descarta el paquete completo.
+\item El receptor no avanza su número de secuencia esperado.
+\item El receptor reenvía el último ACK acumulativo válido o ACK\_NONE si aún no recibió DATA válido.
 \end{itemize}
 
 \item Si ocurre timeout:
 \begin{itemize}
-\item El servidor retransmite todos los paquetes desde el paquete posterior al último ACK confirmado.
+\item El emisor retransmite todos los paquetes desde el paquete posterior al último ACK confirmado.
+\item Si el último ACK confirmado es ACK\_NONE, el emisor retransmite desde el paquete DATA con secuencia 0.
 \end{itemize}
 
 \item Si se supera el máximo de reintentos:
 \begin{itemize}
-\item El servidor cancela la transferencia.
+\item El emisor cancela la transferencia.
 \item El estado de la transferencia pasa a FAILED.
 \end{itemize}
 
 \item Cuando todos los fragmentos son enviados y confirmados:
 \begin{itemize}
-\item El servidor envía END.
-\item El worker responde con ACK final.
+\item El emisor envía END.
+\item El receptor responde con ACK final.
 \end{itemize}
 
 \end{enumerate}
 
-\section{Distribución del Dataset y de Pesos}
+\section{Distribución del Batch y Objetos}
 
-El servidor principal coordinará la distribución del aprendizaje. Para ello invocará un programa o módulo de distribución que dividirá el dataset en 11 partes iguales.
+El servidor principal coordinará la distribución del aprendizaje. Para ello invocará un programa o módulo de distribución que tomará un único batch global y lo dividirá en 11 partes iguales.
 
 \begin{itemize}
 \item La partición 0 será usada por el master.
@@ -542,65 +579,85 @@ El servidor principal coordinará la distribución del aprendizaje. Para ello in
 \item Los workers podrán ejecutarse en computadoras distintas o en terminales separadas.
 \end{itemize}
 
-El forward pass inicial se realizará únicamente en el master. Después, el master ejecutará backpropagation para generar o actualizar las matrices de pesos de las capas ocultas.
+El forward pass se realizará únicamente en el master sobre el batch global. Durante ese forward pass, el master guardará los estados intermedios necesarios para backpropagation.
 
-La red neuronal tendrá 4 capas ocultas de 200 neuronas. Por lo tanto, el master distribuirá 4 matrices completas de pesos:
+La red neuronal tendrá 4 capas ocultas de 200 neuronas. Por lo tanto, la implementación base utilizará 4 matrices principales de pesos:
 
 \[
 W_1,\; W_2,\; W_3,\; W_4
 \]
 
-Cada matriz tendrá tamaño 200x200 y será enviada completa a cada worker. Los workers no recibirán bloques de filas de una matriz, sino las 4 matrices completas para mantener una copia equivalente de la red neuronal.
+Cada matriz tendrá tamaño 200x200. Sin embargo, el protocolo no se limita a enviar estas matrices. El master encapsulará en un objeto \texttt{WORK\_ASSIGNMENT} todo dato requerido para ejecutar backpropagation de forma correcta sobre la partición del worker, incluyendo:
 
-\section{Serialización de Datos y Matrices}
+\begin{itemize}
+\item La partición correspondiente del batch global.
+\item Las matrices de pesos requeridas por la red.
+\item Activaciones generadas por el forward pass del master.
+\item Preactivaciones necesarias para derivadas de funciones de activación.
+\item Etiquetas o targets de la partición.
+\item Derivadas iniciales de la función de pérdida, cuando corresponda.
+\item Metadatos de forma, dtype, capa, partición y reconstrucción.
+\end{itemize}
 
-Las particiones del dataset y las matrices de pesos serán serializadas utilizando arreglos continuos de tipo float32 en formato little-endian.
+Si la red utiliza biases u otros parámetros entrenables, estos se incluirán dentro del mismo objeto de aplicación y se tratarán con el mismo mecanismo de tensores y gradientes.
+
+\section{Serialización de Objetos}
+
+Los objetos de aplicación serán serializados como una secuencia binaria única. Dentro de cada objeto, las particiones del batch y los tensores se almacenarán como arreglos continuos en formato little-endian. El tipo de dato principal será float32, pero cada objeto incluirá metadatos que indiquen dtype, dimensiones, tipo de tensor, capa, parámetro asociado y partición.
 
 Python enviará arreglos NumPy hacia C++ mediante pybind11.
 
-C++ convertirá los datos y las matrices en secuencias binarias para fragmentarlas en paquetes UDP de hasta 512 bytes.
+C++ convertirá cada objeto en una secuencia binaria para fragmentarla en paquetes UDP de hasta 512 bytes.
 
-Cada worker reconstruirá los fragmentos recibidos en orden antes de iniciar su entrenamiento local.
+Cada worker reconstruirá el objeto completo antes de deserializarlo e iniciar su cálculo local de backpropagation.
 
 \section{Flujo General del Sistema}
 
 \begin{enumerate}
 
 \item Python carga el dataset y define la red neuronal.
-\item El servidor principal invoca el programa de distribución del dataset.
-\item El dataset se divide en 11 partes iguales.
-\item El master conserva una partición y envía las otras 10 particiones a los workers.
-\item El master ejecuta el forward pass inicial.
-\item El master ejecuta backpropagation y obtiene las 4 matrices de pesos de las capas ocultas.
-\item Python entrega esas matrices a la biblioteca C++ mediante pybind11.
-\item C++ serializa y transmite las particiones y matrices usando UDP con Go-Back-N.
-\item Cada worker reconstruye su partición y las 4 matrices completas.
-\item Cada worker entrena su red neuronal local durante 1 época con batch size 1.
-\item Cada worker llama a la biblioteca C++ para enviar sus 4 matrices entrenadas al master.
-\item El master combina sus propias matrices con las matrices recibidas de los 10 workers.
-\item El master calcula el promedio elemento a elemento para cada una de las 4 matrices.
-\item Python actualiza la red neuronal principal con las matrices promediadas.
+\item Python selecciona un único batch global de entrenamiento.
+\item El servidor principal invoca el programa de distribución del batch.
+\item El batch global se divide en 11 partes iguales.
+\item El master conserva la partición 0 y asigna las otras 10 particiones a los workers.
+\item El master ejecuta el forward pass sobre el batch global completo.
+\item El master guarda pesos, activaciones, preactivaciones, etiquetas, derivadas iniciales y metadatos necesarios.
+\item Python construye un objeto \texttt{WORK\_ASSIGNMENT} para cada worker y lo entrega a la biblioteca C++ mediante pybind11.
+\item C++ serializa y transmite cada objeto \texttt{WORK\_ASSIGNMENT} usando UDP con Go-Back-N.
+\item Cada worker reconstruye y deserializa su objeto \texttt{WORK\_ASSIGNMENT}.
+\item Cada worker ejecuta backpropagation local sobre su partición sin realizar forward pass propio.
+\item El master ejecuta backpropagation local sobre la partición 0.
+\item Cada worker construye un objeto \texttt{GRADIENT\_RESULT} con sus gradientes y llama a la biblioteca C++ para enviarlo al master.
+\item El master reconstruye y deserializa los objetos \texttt{GRADIENT\_RESULT} de los 10 workers.
+\item El master promedia sus gradientes locales con los gradientes recibidos.
+\item Python actualiza la red neuronal principal aplicando los gradientes promediados.
 
 \end{enumerate}
 
-\section{Promedio de Matrices de Pesos}
+\section{Promedio de Gradientes y Actualización de Pesos}
 
-La operación principal de combinación será el promedio de pesos por capa. Para cada capa oculta $l$, el master calculará:
+La operación principal de combinación será el promedio de gradientes por capa. Para cada capa oculta $l$, el master calculará:
 
 \[
-W_l^{final} =
+G_l^{avg} =
 \frac{
-W_l^{master} + \sum_{i=1}^{10} W_l^{worker_i}
+G_l^{master} + \sum_{i=1}^{10} G_l^{worker_i}
 }{11}
 \]
 
-Este promedio se realizará para las 4 matrices de pesos:
+Este promedio se realizará para los gradientes asociados a las 4 matrices principales de pesos:
 
 \[
 l \in \{1, 2, 3, 4\}
 \]
 
-El resultado será una nueva versión de las matrices de la red neuronal principal del master.
+Luego, Python actualizará los pesos de la red principal usando una regla de optimización. En el caso de SGD simple:
+
+\[
+W_l^{new} = W_l^{old} - \eta G_l^{avg}
+\]
+
+Si la implementación incluye biases u otros parámetros entrenables, el mismo esquema se aplicará a sus gradientes correspondientes.
 
 \section{Integración Python y C++}
 
@@ -611,7 +668,7 @@ Ejemplo:
 \begin{verbatim}
 import distributed_nn
 
-pesos_finales = distributed_nn.run_training_round(
+pesos_actualizados = distributed_nn.run_training_round(
     dataset,
     pesos_iniciales,
     workers
@@ -620,7 +677,7 @@ pesos_finales = distributed_nn.run_training_round(
 
 Python enviará arreglos NumPy hacia C++.
 
-C++ no definirá la red neuronal. La biblioteca C++ se encargará de serializar datos, enviar y recibir paquetes UDP, aplicar Go-Back-N, verificar CRC32, administrar ACK acumulativos y devolver las matrices recibidas hacia Python.
+C++ no definirá la red neuronal. La biblioteca C++ se encargará de serializar objetos de aplicación, fragmentarlos, enviar y recibir paquetes UDP, aplicar Go-Back-N, verificar CRC32, administrar ACK acumulativos, reconstruir objetos completos y devolver hacia Python los gradientes contenidos en los objetos \texttt{GRADIENT\_RESULT}.
 
 \section{Posibles Mejoras Futuras}
 
@@ -676,7 +733,7 @@ La confiabilidad será implementada mediante:
 \item Estados definidos para emisor y receptor
 \end{itemize}
 
-El sistema permitirá distribuir el dataset entre 1 master y 10 workers, entrenar copias equivalentes de la red neuronal y combinar las matrices de pesos mediante promedio elemento a elemento.
+El sistema permitirá dividir un único batch global entre 1 master y 10 workers, ejecutar el forward pass únicamente en el master, distribuir objetos \texttt{WORK\_ASSIGNMENT} con los datos necesarios para backpropagation y combinar los gradientes recibidos en objetos \texttt{GRADIENT\_RESULT} mediante promedio elemento a elemento.
 
 La arquitectura propuesta servirá como base para futuras extensiones orientadas a entrenamiento paralelo de redes neuronales.
 
