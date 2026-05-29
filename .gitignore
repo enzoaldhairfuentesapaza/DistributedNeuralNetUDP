@@ -10,7 +10,4 @@
 server
 worker
 
-/server.cpp
-/worker.cpp
-/protocol.h
-/Makefile
+
