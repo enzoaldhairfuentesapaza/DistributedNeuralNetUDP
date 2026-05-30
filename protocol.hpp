@@ -8,8 +8,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <iostream>
 
-enum class PacketType : uint8_t {
+enum class DatagramType : uint8_t {
     Data = 0x01,
     Ack = 0x02,
     Start = 0x03,
@@ -37,8 +38,8 @@ constexpr int MAX_RETRIES = 5;
 
 static_assert(MAX_PAYLOAD == 476, "Protocol payload size must match the manual");
 
-struct Packet {
-    PacketType type = PacketType::Data;
+struct Datagram {
+    DatagramType type = DatagramType::Data;
     uint32_t seq = 0;
     uint32_t ack = ACK_NONE;
     uint32_t transfer_id = 0;
@@ -48,8 +49,6 @@ struct Packet {
     uint32_t object_size = 0;
     uint32_t fragment = 0;
     uint32_t total_fragments = 0;
-    uint16_t payload_size = 0;
-    uint32_t crc = 0;
     std::vector<uint8_t> payload;
 };
 
@@ -59,6 +58,70 @@ inline uint32_t assignment_transfer_id(uint16_t worker_id) {
 
 inline uint32_t gradient_transfer_id(uint16_t worker_id) {
     return 2000u + worker_id;
+}
+
+inline bool matches_transfer(const Datagram& datagram,
+                             uint32_t transfer_id,
+                             uint16_t expected_sender,
+                             uint16_t expected_receiver,
+                             ObjectType object_type) {
+    return datagram.transfer_id == transfer_id &&
+           datagram.sender_id == expected_sender &&
+           datagram.receiver_id == expected_receiver &&
+           datagram.object_type == object_type;
+}
+
+inline Datagram make_datagram(DatagramType type,
+                          uint32_t transfer_id,
+                          uint16_t sender_id,
+                          uint16_t receiver_id,
+                          ObjectType object_type,
+                          uint32_t object_size,
+                          uint32_t total_fragments) {
+    Datagram datagram;
+    datagram.type = type;
+    datagram.transfer_id = transfer_id;
+    datagram.sender_id = sender_id;
+    datagram.receiver_id = receiver_id;
+    datagram.object_type = object_type;
+    datagram.object_size = object_size;
+    datagram.total_fragments = total_fragments;
+    return datagram;
+}
+
+inline Datagram make_ack_datagram(const Datagram& received, uint32_t ack_value) {
+    Datagram datagram = make_datagram(DatagramType::Ack,
+                                received.transfer_id,
+                                received.receiver_id,
+                                received.sender_id,
+                                received.object_type,
+                                received.object_size,
+                                received.total_fragments);
+    datagram.ack = ack_value;
+    return datagram;
+}
+
+inline Datagram make_data_datagram(const std::vector<uint8_t>& object,
+                               uint32_t transfer_id,
+                               uint16_t sender_id,
+                               uint16_t receiver_id,
+                               ObjectType object_type,
+                               uint32_t index,
+                               uint32_t total_fragments) {
+    Datagram datagram = make_datagram(DatagramType::Data,
+                                transfer_id,
+                                sender_id,
+                                receiver_id,
+                                object_type,
+                                static_cast<uint32_t>(object.size()),
+                                total_fragments);
+    datagram.seq = index;
+    datagram.fragment = index;
+
+    const size_t start = static_cast<size_t>(index) * MAX_PAYLOAD;
+    const size_t end = std::min(start + MAX_PAYLOAD, object.size());
+    datagram.payload.assign(object.begin() + start, object.begin() + end);
+    return datagram;
 }
 
 inline void write4bytes(std::vector<uint8_t>& buffer, size_t offset, uint32_t value) {
@@ -96,11 +159,11 @@ inline uint32_t crc32(const uint8_t* data, size_t length) {
     return crc ^ 0xFFFFFFFFu;
 }
 
-inline bool valid_packet_type(uint8_t value) {
-    return value == static_cast<uint8_t>(PacketType::Data) ||
-           value == static_cast<uint8_t>(PacketType::Ack) ||
-           value == static_cast<uint8_t>(PacketType::Start) ||
-           value == static_cast<uint8_t>(PacketType::End);
+inline bool valid_datagram_type(uint8_t value) {
+    return value == static_cast<uint8_t>(DatagramType::Data) ||
+           value == static_cast<uint8_t>(DatagramType::Ack) ||
+           value == static_cast<uint8_t>(DatagramType::Start) ||
+           value == static_cast<uint8_t>(DatagramType::End);
 }
 
 inline bool valid_object_type(uint8_t value) {
@@ -110,30 +173,30 @@ inline bool valid_object_type(uint8_t value) {
            value == static_cast<uint8_t>(ObjectType::Control);
 }
 
-inline std::vector<uint8_t> serialize_packet(const Packet& packet) {
-    const size_t payload_size = packet.payload.size();
+inline std::vector<uint8_t> serialize_datagram(const Datagram& datagram) {
+    const size_t payload_size = datagram.payload.size();
     std::vector<uint8_t> buffer(HEADER_SIZE + payload_size, 0);
 
-    buffer[0] = static_cast<uint8_t>(packet.type);
-    write4bytes(buffer, 1, packet.seq);
-    write4bytes(buffer, 5, packet.ack);
-    write4bytes(buffer, 9, packet.transfer_id);
-    write2bytes(buffer, 13, packet.sender_id);
-    write2bytes(buffer, 15, packet.receiver_id);
-    buffer[17] = static_cast<uint8_t>(packet.object_type);
-    write4bytes(buffer, 18, packet.object_size);
-    write4bytes(buffer, 22, packet.fragment);
-    write4bytes(buffer, 26, packet.total_fragments);
+    buffer[0] = static_cast<uint8_t>(datagram.type);
+    write4bytes(buffer, 1, datagram.seq);
+    write4bytes(buffer, 5, datagram.ack);
+    write4bytes(buffer, 9, datagram.transfer_id);
+    write2bytes(buffer, 13, datagram.sender_id);
+    write2bytes(buffer, 15, datagram.receiver_id);
+    buffer[17] = static_cast<uint8_t>(datagram.object_type);
+    write4bytes(buffer, 18, datagram.object_size);
+    write4bytes(buffer, 22, datagram.fragment);
+    write4bytes(buffer, 26, datagram.total_fragments);
     write2bytes(buffer, 30, static_cast<uint16_t>(payload_size));
     write4bytes(buffer, 32, 0);
 
-    std::copy(packet.payload.begin(), packet.payload.end(), buffer.begin() + HEADER_SIZE);
+    std::copy(datagram.payload.begin(), datagram.payload.end(), buffer.begin() + HEADER_SIZE);
 
     write4bytes(buffer, 32, crc32(buffer.data(), buffer.size()));
     return buffer;
 }
 
-inline bool parse_packet(const uint8_t* data, size_t length, Packet& packet) {
+inline bool parse_datagram(const uint8_t* data, size_t length, Datagram& datagram) {
     if (length < HEADER_SIZE) {
         return false;
     }
@@ -141,7 +204,7 @@ inline bool parse_packet(const uint8_t* data, size_t length, Packet& packet) {
     const uint8_t raw_type = data[0];
     const uint8_t raw_object_type = data[17];
     const uint16_t payload_size = read2bytes(data, 30);
-    if (!valid_packet_type(raw_type) ||
+    if (!valid_datagram_type(raw_type) ||
         !valid_object_type(raw_object_type) ||
         payload_size > MAX_PAYLOAD ||
         length != HEADER_SIZE + payload_size) {
@@ -155,31 +218,55 @@ inline bool parse_packet(const uint8_t* data, size_t length, Packet& packet) {
         return false;
     }
 
-    packet.type = static_cast<PacketType>(raw_type);
-    packet.seq = read4bytes(data, 1);
-    packet.ack = read4bytes(data, 5);
-    packet.transfer_id = read4bytes(data, 9);
-    packet.sender_id = read2bytes(data, 13);
-    packet.receiver_id = read2bytes(data, 15);
-    packet.object_type = static_cast<ObjectType>(raw_object_type);
-    packet.object_size = read4bytes(data, 18);
-    packet.fragment = read4bytes(data, 22);
-    packet.total_fragments = read4bytes(data, 26);
-    packet.payload_size = payload_size;
-    packet.crc = received_crc;
-    packet.payload.assign(data + HEADER_SIZE, data + HEADER_SIZE + payload_size);
+    datagram.type = static_cast<DatagramType>(raw_type);
+    datagram.seq = read4bytes(data, 1);
+    datagram.ack = read4bytes(data, 5);
+    datagram.transfer_id = read4bytes(data, 9);
+    datagram.sender_id = read2bytes(data, 13);
+    datagram.receiver_id = read2bytes(data, 15);
+    datagram.object_type = static_cast<ObjectType>(raw_object_type);
+    datagram.object_size = read4bytes(data, 18);
+    datagram.fragment = read4bytes(data, 22);
+    datagram.total_fragments = read4bytes(data, 26);
+    datagram.payload.assign(data + HEADER_SIZE, data + HEADER_SIZE + payload_size);
+    std::cout << "Parsed datagram: \ntype=" << static_cast<int>(datagram.type)
+         << " \nseq=" << datagram.seq
+         << " \nack=" << datagram.ack
+         << " \ntransfer_id=" << datagram.transfer_id
+         << " \nsender_id=" << datagram.sender_id
+         << " \nreceiver_id=" << datagram.receiver_id
+         << " \nobject_type=" << static_cast<int>(datagram.object_type)
+         << " \nobject_size=" << datagram.object_size
+         << " \nfragment=" << datagram.fragment
+         << " \ntotal_fragments=" << datagram.total_fragments
+         << " \npayload_size=" << payload_size
+          << " \npayload=" << std::string(datagram.payload.begin(), datagram.payload.end())
+         << "\n\n";
     return true;
 }
 
-inline bool send_packet(int sock, const sockaddr_in& address, const Packet& packet) {
-    if (packet.payload.size() > MAX_PAYLOAD) {
+inline bool send_datagram(int sock, const sockaddr_in& address, const Datagram& datagram) {
+    if (datagram.payload.size() > MAX_PAYLOAD) {
         return false;
     }
 
-    const std::vector<uint8_t> bytes = serialize_packet(packet);
+    const std::vector<uint8_t> bytes = serialize_datagram(datagram);
     const ssize_t sent = sendto(sock, bytes.data(), bytes.size(), 0,
                                 reinterpret_cast<const sockaddr*>(&address),
                                 sizeof(address));
+    std::cout << "Sent datagram: \ntype=" << static_cast<int>(datagram.type)
+         << " \nseq=" << datagram.seq
+         << " \nack=" << datagram.ack
+         << " \ntransfer_id=" << datagram.transfer_id
+         << " \nsender_id=" << datagram.sender_id
+         << " \nreceiver_id=" << datagram.receiver_id
+         << " \nobject_type=" << static_cast<int>(datagram.object_type)
+         << " \nobject_size=" << datagram.object_size
+         << " \nfragment=" << datagram.fragment
+         << " \ntotal_fragments=" << datagram.total_fragments
+         << " \npayload_size=" << datagram.payload.size()
+         << " \npayload=" << std::string(datagram.payload.begin(), datagram.payload.end())
+         << "\n\n";
     return sent == static_cast<ssize_t>(bytes.size());
 }
 

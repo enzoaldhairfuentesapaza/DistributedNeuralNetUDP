@@ -84,7 +84,7 @@ Formato binario de tensores & little-endian \\
 \hline
 Endianness del protocolo & big-endian / network byte order \\
 \hline
-Tamaño de ventana inicial & 8 paquetes \\
+Tamaño de ventana inicial & 8 datagramas \\
 \hline
 Timeout inicial & 500 ms \\
 \hline
@@ -149,7 +149,7 @@ El servidor principal será responsable de:
 \item Enviar las 10 particiones restantes a los workers
 \item Recibir desde Python los objetos \texttt{WORK\_ASSIGNMENT} serializables
 \item Serializar cada objeto de aplicación como una secuencia binaria opaca para la capa RDT
-\item Construir paquetes UDP
+\item Construir datagramas UDP
 \item Administrar ventana Go-Back-N
 \item Enviar objetos serializados a los workers
 \item Administrar ACK y retransmisiones
@@ -164,11 +164,11 @@ El servidor principal será responsable de:
 Los workers serán responsables de:
 
 \begin{itemize}
-\item Recibir paquetes UDP
+\item Recibir datagramas UDP
 \item Verificar integridad
 \item Reconstruir fragmentos en orden
 \item Detectar pérdidas y duplicados
-\item Descartar paquetes fuera de orden
+\item Descartar datagramas fuera de orden
 \item Recibir y reconstruir un objeto \texttt{WORK\_ASSIGNMENT}
 \item Extraer de ese objeto su partición del batch, pesos, activaciones, preactivaciones, etiquetas, derivadas y metadatos necesarios
 \item Ejecutar backpropagation local sin realizar forward pass propio
@@ -181,7 +181,7 @@ Los workers serán responsables de:
 UDP no garantiza:
 
 \begin{itemize}
-\item Entrega de paquetes
+\item Entrega de datagramas
 \item Orden correcto
 \item Integridad
 \item Protección contra duplicados
@@ -192,8 +192,8 @@ Por esta razón se implementará un protocolo RDT sobre UDP utilizando Go-Back-N
 \section{Características del Protocolo RDT}
 
 El protocolo implementará el mecanismo Go-Back-N sobre UDP.
-Go-Back-N permitirá enviar múltiples paquetes consecutivos sin esperar una confirmación inmediata por cada uno de ellos.
-El protocolo no utilizará NACK explícitos; ante paquetes corruptos, duplicados o fuera de orden, el receptor reenviará el último ACK acumulativo válido y el emisor recuperará la transferencia mediante timeout y retransmisión Go-Back-N.
+Go-Back-N permitirá enviar múltiples datagramas consecutivos sin esperar una confirmación inmediata por cada uno de ellos.
+El protocolo no utilizará NACK explícitos; ante datagramas corruptos, duplicados o fuera de orden, el receptor reenviará el último ACK acumulativo válido y el emisor recuperará la transferencia mediante timeout y retransmisión Go-Back-N.
 
 \begin{table}[h]
 \centering
@@ -201,19 +201,19 @@ El protocolo no utilizará NACK explícitos; ante paquetes corruptos, duplicados
 \hline
 Característica & Descripción \\
 \hline
-ACK acumulativo & Confirma el último paquete recibido correctamente en orden \\
+ACK acumulativo & Confirma el último datagrama recibido correctamente en orden \\
 \hline
-Ventana deslizante & Permite mantener varios paquetes en tránsito simultáneamente \\
+Ventana deslizante & Permite mantener varios datagramas en tránsito simultáneamente \\
 \hline
 Número de secuencia & Detecta pérdidas, duplicados y mantiene el orden \\
 \hline
-Timeout & Detecta pérdida de paquetes o ACKs \\
+Timeout & Detecta pérdida de datagramas o ACKs \\
 \hline
-Retransmisión Go-Back-N & Retransmite todos los paquetes desde el paquete posterior al último ACK confirmado \\
+Retransmisión Go-Back-N & Retransmite todos los datagramas desde el datagrama posterior al último ACK confirmado \\
 \hline
 CRC32 & Detecta corrupción tanto en el encabezado como en el payload \\
 \hline
-Recepción en orden & El receptor solo acepta el paquete esperado y descarta paquetes fuera de orden \\
+Recepción en orden & El receptor solo acepta el datagrama esperado y descarta datagramas fuera de orden \\
 \hline
 \end{tabular}
 \end{table}
@@ -234,7 +234,7 @@ Tamaño máximo del datagrama UDP & 512 bytes \\
 \hline
 Tamaño máximo del payload & 476 bytes \\
 \hline
-Tamaño inicial de ventana & 8 paquetes \\
+Tamaño inicial de ventana & 8 datagramas \\
 \hline
 Timeout inicial & 500 ms \\
 \hline
@@ -242,7 +242,7 @@ Máximo de reintentos & 5 \\
 \hline
 Primer número de secuencia DATA & 0 \\
 \hline
-ACK inicial sin paquetes válidos & ACK\_NONE = 0xFFFFFFFF \\
+ACK inicial sin datagramas válidos & ACK\_NONE = 0xFFFFFFFF \\
 \hline
 CRC & CRC32 sobre header y payload válido \\
 \hline
@@ -251,13 +251,13 @@ CRC & CRC32 sobre header y payload válido \\
 
 Todos los campos numéricos del encabezado del protocolo serán serializados en big-endian, también conocido como network byte order. El payload será tratado por la capa RDT como una secuencia opaca de bytes. La interpretación de tensores, dtype, dimensiones y metadatos pertenecerá a la capa de aplicación contenida dentro del objeto serializado.
 
-Si un paquete o conjunto de paquetes supera el máximo de reintentos definido, la transferencia se considerará fallida y será cancelada.
+Si un datagrama o conjunto de datagramas supera el máximo de reintentos definido, la transferencia se considerará fallida y será cancelada.
 
-\section{Formato del Paquete UDP}
+\section{Formato del Datagrama UDP}
 
 Cada datagrama UDP tendrá un tamaño máximo de 512 bytes. El encabezado del protocolo tendrá tamaño fijo de 36 bytes y el payload podrá contener hasta 476 bytes del objeto serializado.
 
-\subsection{Estructura del paquete}
+\subsection{Estructura del datagrama}
 
 \begin{table}[h]
 \centering
@@ -265,7 +265,7 @@ Cada datagrama UDP tendrá un tamaño máximo de 512 bytes. El encabezado del pr
 \hline
 Campo & Tamaño \\
 \hline
-Tipo de paquete & 1 byte \\
+Tipo de datagrama & 1 byte \\
 \hline
 Número de secuencia & 4 bytes \\
 \hline
@@ -298,11 +298,11 @@ Payload & 476 bytes \\
 
 \begin{itemize}
 
-\item \textbf{Tipo de paquete:} Identifica si el paquete corresponde a DATA, ACK, START o END.
+\item \textbf{Tipo de datagrama:} Identifica si el datagrama corresponde a DATA, ACK, START o END.
 
-\item \textbf{Número de secuencia:} Identifica el orden lógico del paquete dentro de la transferencia. Permite detectar pérdidas, duplicados y mantener el orden correcto.
+\item \textbf{Número de secuencia:} Identifica el orden lógico del datagrama dentro de la transferencia. Permite detectar pérdidas, duplicados y mantener el orden correcto.
 
-\item \textbf{Número ACK:} Indica el último número de secuencia recibido correctamente y en orden. Este campo se utiliza principalmente en paquetes ACK. Por ejemplo, si el receptor recibió correctamente los paquetes 0, 1 y 2, enviará un ACK con valor 2. Si todavía no recibió ningún DATA válido, utilizará el valor especial ACK\_NONE.
+\item \textbf{Número ACK:} Indica el último número de secuencia recibido correctamente y en orden. Este campo se utiliza principalmente en datagramas ACK. Por ejemplo, si el receptor recibió correctamente los datagramas 0, 1 y 2, enviará un ACK con valor 2. Si todavía no recibió ningún DATA válido, utilizará el valor especial ACK\_NONE.
 
 \item \textbf{ID de transferencia:} Identifica una transferencia lógica completa y actúa como ID del objeto serializado. Todos los fragmentos que pertenecen al mismo objeto utilizan el mismo ID de transferencia.
 
@@ -326,7 +326,7 @@ Payload & 476 bytes \\
 
 \end{itemize}
 
-\section{Tipos de Paquete}
+\section{Tipos de Datagrama}
 
 \begin{table}[h]
 \centering
@@ -334,7 +334,7 @@ Payload & 476 bytes \\
 \hline
 Tipo & Valor numérico & Significado \\
 \hline
-DATA & 0x01 & Paquete de datos \\
+DATA & 0x01 & Datagrama de datos \\
 \hline
 ACK & 0x02 & ACK acumulativo \\
 \hline
@@ -375,29 +375,29 @@ La semántica de los datos estará definida en una capa superior de aplicación:
 \item \texttt{GRADIENT\_RESULT}: objeto creado por un worker para el master. Incluye los gradientes calculados sobre su partición y los metadatos necesarios para validar forma, dtype, capa y parámetro asociado.
 \end{itemize}
 
-Cada objeto será serializado por la biblioteca C++ en una secuencia binaria. Luego el protocolo RDT fragmentará esa secuencia en paquetes DATA, los transmitirá usando Go-Back-N y reconstruirá exactamente el mismo objeto en el receptor. Una vez reconstruido, la capa de aplicación deserializará el objeto y procesará sus tensores internos.
+Cada objeto será serializado por la biblioteca C++ en una secuencia binaria. Luego el protocolo RDT fragmentará esa secuencia en datagramas DATA, los transmitirá usando Go-Back-N y reconstruirá exactamente el mismo objeto en el receptor. Una vez reconstruido, la capa de aplicación deserializará el objeto y procesará sus tensores internos.
 
-\section{Campos Usados por Cada Tipo de Paquete}
+\section{Campos Usados por Cada Tipo de Datagrama}
 
-No todos los tipos de paquete utilizan todos los campos del encabezado. Los campos no utilizados deberán enviarse con valor cero.
+No todos los tipos de datagrama utilizan todos los campos del encabezado. Los campos no utilizados deberán enviarse con valor cero.
 
 \begin{longtable}{|l|p{10cm}|}
 \hline
-Tipo de paquete & Campos principales utilizados \\
+Tipo de datagrama & Campos principales utilizados \\
 \hline
-START & Tipo de paquete, ID de transferencia, ID del emisor, ID del receptor, tipo de objeto, tamaño total del objeto, total de fragmentos, CRC32 \\
+START & Tipo de datagrama, ID de transferencia, ID del emisor, ID del receptor, tipo de objeto, tamaño total del objeto, total de fragmentos, CRC32 \\
 \hline
-DATA & Tipo de paquete, número de secuencia, ID de transferencia, ID del emisor, ID del receptor, tipo de objeto, tamaño total del objeto, número de fragmento, total de fragmentos, tamaño útil del payload, CRC32, payload \\
+DATA & Tipo de datagrama, número de secuencia, ID de transferencia, ID del emisor, ID del receptor, tipo de objeto, tamaño total del objeto, número de fragmento, total de fragmentos, tamaño útil del payload, CRC32, payload \\
 \hline
-ACK & Tipo de paquete, número ACK, ID de transferencia, ID del emisor, ID del receptor, CRC32 \\
+ACK & Tipo de datagrama, número ACK, ID de transferencia, ID del emisor, ID del receptor, CRC32 \\
 \hline
-END & Tipo de paquete, número de secuencia, número ACK, ID de transferencia, ID del emisor, ID del receptor, CRC32 \\
+END & Tipo de datagrama, número de secuencia, número ACK, ID de transferencia, ID del emisor, ID del receptor, CRC32 \\
 \hline
 \end{longtable}
 
-\section{Integridad de Paquetes}
+\section{Integridad de Datagramas}
 
-Cada paquete incluirá un valor CRC32 calculado sobre el encabezado y el payload válido del paquete.
+Cada datagrama incluirá un valor CRC32 calculado sobre el encabezado y el payload válido del datagrama.
 
 Para realizar el cálculo, el campo CRC32 se coloca temporalmente en cero. Luego se calcula el CRC32 sobre:
 
@@ -405,52 +405,52 @@ Para realizar el cálculo, el campo CRC32 se coloca temporalmente en cero. Luego
 \text{CRC32} = CRC32(\text{header con CRC32 = 0} + \text{payload válido})
 \]
 
-Esto permite detectar corrupción no solo en el contenido transmitido, sino también en campos críticos como el tipo de paquete, número de secuencia, número ACK, ID de transferencia, ID del emisor, ID del receptor, tipo de objeto, tamaño total del objeto, número de fragmento, total de fragmentos y tamaño útil del payload.
+Esto permite detectar corrupción no solo en el contenido transmitido, sino también en campos críticos como el tipo de datagrama, número de secuencia, número ACK, ID de transferencia, ID del emisor, ID del receptor, tipo de objeto, tamaño total del objeto, número de fragmento, total de fragmentos y tamaño útil del payload.
 
 El receptor recalculará el CRC32 utilizando el mismo procedimiento y lo comparará con el valor recibido.
 
 \subsection{Si el CRC32 coincide}
 
 \begin{itemize}
-\item El paquete se considera íntegro.
-\item El receptor verifica si el número de secuencia corresponde al paquete esperado.
-\item Si el paquete es el esperado, se acepta y se actualiza el último número de secuencia recibido correctamente en orden.
-\item Se envía un ACK acumulativo indicando el último paquete recibido correctamente en orden.
+\item El datagrama se considera íntegro.
+\item El receptor verifica si el número de secuencia corresponde al datagrama esperado.
+\item Si el datagrama es el esperado, se acepta y se actualiza el último número de secuencia recibido correctamente en orden.
+\item Se envía un ACK acumulativo indicando el último datagrama recibido correctamente en orden.
 \end{itemize}
 
 \subsection{Si el CRC32 falla}
 
 \begin{itemize}
-\item El paquete se considera corrupto.
-\item El paquete completo se descarta.
+\item El datagrama se considera corrupto.
+\item El datagrama completo se descarta.
 \item No se actualiza el número de secuencia esperado.
-\item El receptor reenvía el ACK acumulativo del último paquete recibido correctamente en orden. Si todavía no recibió ningún DATA válido, responde con ACK\_NONE.
+\item El receptor reenvía el ACK acumulativo del último datagrama recibido correctamente en orden. Si todavía no recibió ningún DATA válido, responde con ACK\_NONE.
 \item No se envía NACK, porque el protocolo utiliza Go-Back-N puro.
 \end{itemize}
 
 \section{Números de Secuencia, ACK y Ventana}
 
-Cada paquete DATA tendrá un número de secuencia único dentro de la transferencia.
+Cada datagrama DATA tendrá un número de secuencia único dentro de la transferencia.
 
-El protocolo utilizará una ventana deslizante Go-Back-N de tamaño configurable. El valor inicial de la ventana será de 8 paquetes.
+El protocolo utilizará una ventana deslizante Go-Back-N de tamaño configurable. El valor inicial de la ventana será de 8 datagramas.
 
-La ventana permitirá mantener múltiples paquetes en tránsito simultáneamente.
+La ventana permitirá mantener múltiples datagramas en tránsito simultáneamente.
 
 El campo ACK tendrá semántica acumulativa:
 
 \begin{itemize}
-\item Un ACK con valor $n$ indica que todos los paquetes desde el inicio hasta el paquete $n$ fueron recibidos correctamente y en orden.
-\item Un ACK con valor ACK\_NONE indica que todavía no se recibió ningún paquete DATA válido de la transferencia.
+\item Un ACK con valor $n$ indica que todos los datagramas desde el inicio hasta el datagrama $n$ fueron recibidos correctamente y en orden.
+\item Un ACK con valor ACK\_NONE indica que todavía no se recibió ningún datagrama DATA válido de la transferencia.
 \item ACK\_NONE es un valor centinela y no se interpreta como un número de secuencia mayor que los demás.
-\item Si el receptor espera el paquete $k$ pero recibe un paquete distinto, lo descarta y vuelve a enviar el ACK del último paquete válido en orden.
+\item Si el receptor espera el datagrama $k$ pero recibe un datagrama distinto, lo descarta y vuelve a enviar el ACK del último datagrama válido en orden.
 \item Si se pierde un ACK, el emisor podrá continuar si recibe un ACK posterior válido con un número mayor.
 \end{itemize}
 
 Los números de secuencia permitirán:
 
 \begin{itemize}
-\item Detectar paquetes duplicados
-\item Detectar paquetes perdidos
+\item Detectar datagramas duplicados
+\item Detectar datagramas perdidos
 \item Mantener el orden correcto
 \item Controlar retransmisiones
 \item Implementar ACK acumulativos
@@ -460,7 +460,7 @@ Los números de secuencia permitirán:
 
 El protocolo utilizará un timeout inicial de 500 ms.
 
-Si el emisor no recibe un ACK válido antes de que expire el timeout, retransmitirá todos los paquetes pendientes desde el paquete posterior al último ACK confirmado.
+Si el emisor no recibe un ACK válido antes de que expire el timeout, retransmitirá todos los datagramas pendientes desde el datagrama posterior al último ACK confirmado.
 
 El número máximo de reintentos será 5. Si después de 5 reintentos no se recibe confirmación, la transferencia se marcará como fallida y será cancelada.
 
@@ -478,9 +478,9 @@ IDLE & El emisor está esperando una nueva transferencia \\
 \hline
 START\_SENT & El emisor envió START y espera ACK de inicio \\
 \hline
-SENDING & El emisor envía paquetes DATA dentro de la ventana Go-Back-N \\
+SENDING & El emisor envía datagramas DATA dentro de la ventana Go-Back-N \\
 \hline
-WAITING\_ACK & El emisor espera ACKs acumulativos de los paquetes enviados \\
+WAITING\_ACK & El emisor espera ACKs acumulativos de los datagramas enviados \\
 \hline
 END\_SENT & El emisor envió END y espera ACK final \\
 \hline
@@ -499,11 +499,11 @@ FAILED & La transferencia falló por exceso de reintentos o error irrecuperable 
 \hline
 Estado & Descripción \\
 \hline
-IDLE & El receptor espera un paquete START \\
+IDLE & El receptor espera un datagrama START \\
 \hline
-RECEIVING & El receptor acepta únicamente el paquete DATA esperado y descarta paquetes fuera de orden \\
+RECEIVING & El receptor acepta únicamente el datagrama DATA esperado y descarta datagramas fuera de orden \\
 \hline
-COMPLETE & El receptor recibió todos los fragmentos correctamente y espera o responde al paquete END \\
+COMPLETE & El receptor recibió todos los fragmentos correctamente y espera o responde al datagrama END \\
 \hline
 DONE & La transferencia terminó correctamente \\
 \hline
@@ -518,41 +518,41 @@ La transferencia confiable seguirá el siguiente flujo. El mismo procedimiento s
 
 \begin{enumerate}
 
-\item El emisor envía un paquete START.
+\item El emisor envía un datagrama START.
 
 \item El receptor responde con ACK.
 
-\item El emisor comienza el envío continuo de paquetes DATA dentro de la ventana Go-Back-N.
+\item El emisor comienza el envío continuo de datagramas DATA dentro de la ventana Go-Back-N.
 
 \item El receptor verifica el CRC32 calculado sobre encabezado y payload.
 
 \item Si el CRC32 es válido, el receptor verifica el número de secuencia.
 
-\item Si el paquete recibido es exactamente el paquete esperado:
+\item Si el datagrama recibido es exactamente el datagrama esperado:
 \begin{itemize}
-\item El receptor acepta el paquete.
+\item El receptor acepta el datagrama.
 \item Actualiza el último número de secuencia recibido correctamente en orden.
 \item Envía un ACK acumulativo con ese número de secuencia.
 \end{itemize}
 
-\item Si el paquete recibido está duplicado o fuera de orden:
+\item Si el datagrama recibido está duplicado o fuera de orden:
 \begin{itemize}
-\item El receptor descarta el paquete.
+\item El receptor descarta el datagrama.
 \item El receptor reenvía un ACK acumulativo con el último número de secuencia recibido correctamente en orden.
-\item Si todavía no existe un paquete válido confirmado, el receptor responde con ACK\_NONE.
+\item Si todavía no existe un datagrama válido confirmado, el receptor responde con ACK\_NONE.
 \end{itemize}
 
-\item Si un paquete llega corrupto:
+\item Si un datagrama llega corrupto:
 \begin{itemize}
-\item El receptor descarta el paquete completo.
+\item El receptor descarta el datagrama completo.
 \item El receptor no avanza su número de secuencia esperado.
 \item El receptor reenvía el último ACK acumulativo válido o ACK\_NONE si aún no recibió DATA válido.
 \end{itemize}
 
 \item Si ocurre timeout:
 \begin{itemize}
-\item El emisor retransmite todos los paquetes desde el paquete posterior al último ACK confirmado.
-\item Si el último ACK confirmado es ACK\_NONE, el emisor retransmite desde el paquete DATA con secuencia 0.
+\item El emisor retransmite todos los datagramas desde el datagrama posterior al último ACK confirmado.
+\item Si el último ACK confirmado es ACK\_NONE, el emisor retransmite desde el datagrama DATA con secuencia 0.
 \end{itemize}
 
 \item Si se supera el máximo de reintentos:
@@ -607,7 +607,7 @@ Los objetos de aplicación serán serializados como una secuencia binaria única
 
 Python enviará arreglos NumPy hacia C++ mediante pybind11.
 
-C++ convertirá cada objeto en una secuencia binaria para fragmentarla en paquetes UDP de hasta 512 bytes.
+C++ convertirá cada objeto en una secuencia binaria para fragmentarla en datagramas UDP de hasta 512 bytes.
 
 Cada worker reconstruirá el objeto completo antes de deserializarlo e iniciar su cálculo local de backpropagation.
 
@@ -677,7 +677,7 @@ pesos_actualizados = distributed_nn.run_training_round(
 
 Python enviará arreglos NumPy hacia C++.
 
-C++ no definirá la red neuronal. La biblioteca C++ se encargará de serializar objetos de aplicación, fragmentarlos, enviar y recibir paquetes UDP, aplicar Go-Back-N, verificar CRC32, administrar ACK acumulativos, reconstruir objetos completos y devolver hacia Python los gradientes contenidos en los objetos \texttt{GRADIENT\_RESULT}.
+C++ no definirá la red neuronal. La biblioteca C++ se encargará de serializar objetos de aplicación, fragmentarlos, enviar y recibir datagramas UDP, aplicar Go-Back-N, verificar CRC32, administrar ACK acumulativos, reconstruir objetos completos y devolver hacia Python los gradientes contenidos en los objetos \texttt{GRADIENT\_RESULT}.
 
 \section{Posibles Mejoras Futuras}
 
@@ -685,7 +685,7 @@ C++ no definirá la red neuronal. La biblioteca C++ se encargará de serializar 
 \item Selective Repeat
 \item Timeout dinámico
 \item Multithreading
-\item Compresión de paquetes
+\item Compresión de datagramas
 \item Balanceo dinámico de carga
 \item Aceleración GPU
 \item Paralelismo híbrido CPU/GPU

@@ -7,7 +7,9 @@
 *.dSYM/
 
 # Project binaries
-server
+master
 worker
 
-
+#test files
+test_udp/
+test.txt

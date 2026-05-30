@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -16,6 +17,7 @@
 #include <vector>
 
 using namespace std;
+using Clock = chrono::steady_clock;
 
 struct WorkerAddress {
     const char* host;
@@ -36,6 +38,45 @@ const WorkerAddress WORKERS[] = {
     {"127.0.0.1", 9010, 10},
 };
 
+enum class SendPhase {
+    Start,
+    Data,
+    End,
+    Done,
+    Failed,
+};
+
+struct SendState {
+    vector<uint8_t> object;
+    uint32_t transfer_id = 0;
+    uint16_t receiver_id = 0;
+    uint32_t object_size = 0;
+    uint32_t total_fragments = 0;
+    uint32_t base = 0;
+    uint32_t next = 0;
+    int retries = 0;
+    bool waiting = false;
+    SendPhase phase = SendPhase::Start;
+    Clock::time_point last_send = Clock::now();
+};
+
+struct ReceiveState {
+    uint32_t transfer_id = 0;
+    bool receiving = false;
+    bool done = false;
+    uint32_t expected_seq = 0;
+    uint32_t total_fragments = 0;
+    uint32_t object_size = 0;
+    vector<uint8_t> data;
+};
+
+struct WorkerSession {
+    WorkerAddress worker {};
+    sockaddr_in address {};
+    SendState assignment;
+    ReceiveState result;
+};
+
 bool read_file(const string& path, vector<uint8_t>& data) {
     ifstream file(path, ios::binary);
     if (!file) {
@@ -54,372 +95,354 @@ bool write_file(const string& path, const vector<uint8_t>& data) {
     return file.good();
 }
 
-bool ensure_directory(const string& path) {
-    struct stat info {};
-    if (stat(path.c_str(), &info) == 0) {
-        return S_ISDIR(info.st_mode);
-    }
-    return mkdir(path.c_str(), 0755) == 0;
-}
-
-string worker_file_path(const string& directory, uint16_t worker_id) {
-    return directory + "/worker_" + to_string(worker_id) + ".bin";
-}
-
-bool make_address(const WorkerAddress& worker, sockaddr_in& address) {
-    memset(&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_port = htons(worker.port);
-    return inet_pton(AF_INET, worker.host, &address.sin_addr) == 1;
-}
-
-bool wait_for_packet(int sock, const sockaddr_in& expected_address, Packet& packet) {
-    fd_set read_set;
-    FD_ZERO(&read_set);
-    FD_SET(sock, &read_set);
-
-    timeval timeout {};
-    timeout.tv_sec = TIMEOUT_MS / 1000;
-    timeout.tv_usec = (TIMEOUT_MS % 1000) * 1000;
-
-    const int ready = select(sock + 1, &read_set, nullptr, nullptr, &timeout);
-    if (ready <= 0) {
-        return false;
-    }
-
+bool read_datagram(int sock, Datagram& datagram, sockaddr_in& from) {
     uint8_t buffer[DATAGRAM_SIZE];
-    sockaddr_in from {};
     socklen_t from_len = sizeof(from);
     const ssize_t received = recvfrom(sock, buffer, sizeof(buffer), 0,
                                       reinterpret_cast<sockaddr*>(&from), &from_len);
-    if (received < 0 || !same_address(from, expected_address)) {
+    if (received < 0) {
+        return false;
+    }
+    return parse_datagram(buffer, static_cast<size_t>(received), datagram);
+}
+
+bool send_control_datagram(int sock, WorkerSession& session, DatagramType type) {
+    SendState& state = session.assignment;
+    Datagram datagram = make_datagram(type,
+                             state.transfer_id,
+                             MASTER_ID,
+                             state.receiver_id,
+                             ObjectType::WorkAssignment,
+                             state.object_size,
+                             state.total_fragments);
+    if (type == DatagramType::End) {
+        datagram.seq = state.total_fragments;
+    }
+    datagram.ack = ACK_NONE;
+
+    if (!send_datagram(sock, session.address, datagram)) {
+        cerr << "Worker " << session.worker.id << ": failed to send "
+             << (type == DatagramType::Start ? "START" : "END") << "\n";
+        state.phase = SendPhase::Failed;
         return false;
     }
 
-    return parse_packet(buffer, static_cast<size_t>(received), packet);
-}
-
-bool matches_transfer(const Packet& packet,
-                      uint32_t transfer_id,
-                      uint16_t expected_sender,
-                      uint16_t expected_receiver,
-                      ObjectType object_type) {
-    return packet.transfer_id == transfer_id &&
-           packet.sender_id == expected_sender &&
-           packet.receiver_id == expected_receiver &&
-           packet.object_type == object_type;
-}
-
-Packet make_packet(PacketType type,
-                   uint32_t transfer_id,
-                   uint16_t sender_id,
-                   uint16_t receiver_id,
-                   ObjectType object_type,
-                   uint32_t object_size,
-                   uint32_t total_fragments) {
-    Packet packet;
-    packet.type = type;
-    packet.transfer_id = transfer_id;
-    packet.sender_id = sender_id;
-    packet.receiver_id = receiver_id;
-    packet.object_type = object_type;
-    packet.object_size = object_size;
-    packet.total_fragments = total_fragments;
-    return packet;
-}
-
-Packet make_ack(const Packet& received, uint32_t ack_value) {
-    Packet packet = make_packet(PacketType::Ack,
-                                received.transfer_id,
-                                received.receiver_id,
-                                received.sender_id,
-                                received.object_type,
-                                received.object_size,
-                                received.total_fragments);
-    packet.ack = ack_value;
-    return packet;
-}
-
-Packet make_data_packet(const vector<uint8_t>& object,
-                        uint32_t transfer_id,
-                        uint16_t sender_id,
-                        uint16_t receiver_id,
-                        ObjectType object_type,
-                        uint32_t index,
-                        uint32_t total_fragments) {
-    Packet packet = make_packet(PacketType::Data,
-                                transfer_id,
-                                sender_id,
-                                receiver_id,
-                                object_type,
-                                static_cast<uint32_t>(object.size()),
-                                total_fragments);
-    packet.seq = index;
-    packet.fragment = index;
-
-    const size_t start = static_cast<size_t>(index) * MAX_PAYLOAD;
-    const size_t end = min(start + MAX_PAYLOAD, object.size());
-    packet.payload.assign(object.begin() + start, object.begin() + end);
-    return packet;
-}
-
-bool wait_for_ack(int sock,
-                  const sockaddr_in& address,
-                  uint32_t transfer_id,
-                  uint16_t expected_sender,
-                  uint16_t expected_receiver,
-                  ObjectType object_type,
-                  uint32_t& ack_value) {
-    Packet packet;
-    if (!wait_for_packet(sock, address, packet)) {
-        return false;
-    }
-
-    if (packet.type != PacketType::Ack ||
-        !matches_transfer(packet, transfer_id, expected_sender, expected_receiver, object_type)) {
-        return false;
-    }
-
-    ack_value = packet.ack;
+    state.waiting = true;
+    state.last_send = Clock::now();
     return true;
 }
 
-bool send_control_with_ack(int sock,
-                           const sockaddr_in& address,
-                           const Packet& packet,
-                           uint32_t expected_ack) {
-    for (int attempt = 0; attempt <= MAX_RETRIES; ++attempt) {
-        if (!send_packet(sock, address, packet)) {
+bool send_data_window(int sock, WorkerSession& session) {
+    SendState& state = session.assignment;
+    while (state.next < state.total_fragments && state.next < state.base + WINDOW_SIZE) {
+        Datagram data = make_data_datagram(state.object,
+                                       state.transfer_id,
+                                       MASTER_ID,
+                                       state.receiver_id,
+                                       ObjectType::WorkAssignment,
+                                       state.next,
+                                       state.total_fragments);
+        if (!send_datagram(sock, session.address, data)) {
+            cerr << "Worker " << session.worker.id << ": failed to send DATA\n";
+            state.phase = SendPhase::Failed;
             return false;
         }
+        ++state.next;
+    }
 
-        uint32_t ack = ACK_NONE;
-        if (wait_for_ack(sock,
-                         address,
-                         packet.transfer_id,
-                         packet.receiver_id,
-                         packet.sender_id,
-                         packet.object_type,
-                         ack) &&
-            ack == expected_ack) {
+    state.waiting = state.base < state.next;
+    state.last_send = Clock::now();
+    return true;
+}
+
+void pump_assignment_sender(int sock, WorkerSession& session) {
+    SendState& state = session.assignment;
+    if (state.phase == SendPhase::Done || state.phase == SendPhase::Failed) {
+        return;
+    }
+
+    const auto elapsed = chrono::duration_cast<chrono::milliseconds>(Clock::now() - state.last_send);
+    if (state.waiting && elapsed.count() >= TIMEOUT_MS) {
+        ++state.retries;
+        if (state.retries > MAX_RETRIES) {
+            cerr << "Worker " << session.worker.id << ": transfer timed out\n";
+            state.phase = SendPhase::Failed;
+            return;
+        }
+
+        if (state.phase == SendPhase::Data) {
+            state.next = state.base;
+        }
+        state.waiting = false;
+    }
+
+    if (state.phase == SendPhase::Failed || state.waiting) {
+        return;
+    }
+
+    if (state.phase == SendPhase::Start) {
+        send_control_datagram(sock, session, DatagramType::Start);
+    } else if (state.phase == SendPhase::Data) {
+        send_data_window(sock, session);
+    } else if (state.phase == SendPhase::End) {
+        send_control_datagram(sock, session, DatagramType::End);
+    }
+}
+
+void handle_assignment_ack(WorkerSession& session, const Datagram& datagram) {
+    SendState& state = session.assignment;
+    if (state.phase == SendPhase::Done || state.phase == SendPhase::Failed) {
+        return;
+    }
+
+    if (state.phase == SendPhase::Start) {
+        if (datagram.ack == ACK_NONE) {
+            state.phase = SendPhase::Data;
+            state.waiting = false;
+            state.retries = 0;
+            cout << "Worker " << session.worker.id << ": START acknowledged\n";
+        }
+        return;
+    }
+
+    if (state.phase == SendPhase::Data) {
+        if (datagram.ack == ACK_NONE) {
+            state.base = 0;
+            state.next = 0;
+            state.waiting = false;
+            return;
+        }
+
+        if (datagram.ack >= state.base && datagram.ack < state.total_fragments) {
+            state.base = datagram.ack + 1;
+            state.retries = 0;
+            if (state.base == state.total_fragments) {
+                state.phase = SendPhase::End;
+                state.waiting = false;
+                cout << "Worker " << session.worker.id << ": DATA acknowledged\n";
+            } else if (state.base == state.next) {
+                state.waiting = false;
+            } else {
+                state.last_send = Clock::now();
+            }
+        }
+        return;
+    }
+
+    if (state.phase == SendPhase::End && datagram.ack == state.total_fragments) {
+        state.phase = SendPhase::Done;
+        state.waiting = false;
+        state.retries = 0;
+        cout << "Worker " << session.worker.id << ": WORK_ASSIGNMENT sent\n";
+    }
+}
+
+void handle_result_datagram(int sock, WorkerSession& session, const Datagram& datagram) {
+    ReceiveState& state = session.result;
+    if (state.done) {
+        if (datagram.type == DatagramType::End) {
+            send_datagram(sock, session.address, make_ack_datagram(datagram, datagram.seq));
+        }
+        return;
+    }
+
+    if (datagram.transfer_id != state.transfer_id ||
+        datagram.object_type != ObjectType::GradientResult) {
+        return;
+    }
+
+    if (datagram.type == DatagramType::Start) {
+        state.receiving = true;
+        state.expected_seq = 0;
+        state.total_fragments = datagram.total_fragments;
+        state.object_size = datagram.object_size;
+        state.data.clear();
+        send_datagram(sock, session.address, make_ack_datagram(datagram, ACK_NONE));
+        cout << "Worker " << session.worker.id << ": receiving GRADIENT_RESULT ("
+             << state.object_size << " bytes)\n";
+        return;
+    }
+
+    if (!state.receiving) {
+        return;
+    }
+
+    if (datagram.type == DatagramType::Data) {
+        if (datagram.seq == state.expected_seq &&
+            datagram.fragment == state.expected_seq) {
+            state.data.insert(state.data.end(), datagram.payload.begin(), datagram.payload.end());
+            send_datagram(sock, session.address, make_ack_datagram(datagram, state.expected_seq));
+            ++state.expected_seq;
+        } else {
+            const uint32_t last_ack = state.expected_seq == 0 ? ACK_NONE : state.expected_seq - 1;
+            send_datagram(sock, session.address, make_ack_datagram(datagram, last_ack));
+        }
+        return;
+    }
+
+    if (datagram.type == DatagramType::End) {
+        if (state.expected_seq == state.total_fragments &&
+            datagram.seq == state.total_fragments &&
+            state.data.size() == state.object_size) {
+            send_datagram(sock, session.address, make_ack_datagram(datagram, datagram.seq));
+            state.done = true;
+            cout << "Worker " << session.worker.id << ": GRADIENT_RESULT received\n";
+            return;
+        }
+
+        const uint32_t last_ack = state.expected_seq == 0 ? ACK_NONE : state.expected_seq - 1;
+        send_datagram(sock, session.address, make_ack_datagram(datagram, last_ack));
+    }
+}
+
+WorkerSession* find_session(vector<WorkerSession>& sessions, const sockaddr_in& from, const Datagram& datagram) {
+    for (WorkerSession& session : sessions) {
+        if (same_address(session.address, from) &&
+            datagram.sender_id == session.worker.id &&
+            datagram.receiver_id == MASTER_ID) {
+            return &session;
+        }
+    }
+    return nullptr;
+}
+
+bool all_done(const vector<WorkerSession>& sessions) {
+    for (const WorkerSession& session : sessions) {
+        if (session.assignment.phase != SendPhase::Done || !session.result.done) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool any_failed(const vector<WorkerSession>& sessions) {
+    for (const WorkerSession& session : sessions) {
+        if (session.assignment.phase == SendPhase::Failed) {
             return true;
         }
     }
     return false;
 }
 
-bool send_object(int sock,
-                 const sockaddr_in& address,
-                 const vector<uint8_t>& object,
-                 uint32_t transfer_id,
-                 uint16_t sender_id,
-                 uint16_t receiver_id,
-                 ObjectType object_type) {
-    const uint32_t total_fragments =
-        max<uint32_t>(1, static_cast<uint32_t>((object.size() + MAX_PAYLOAD - 1) / MAX_PAYLOAD));
-    const uint32_t object_size = static_cast<uint32_t>(object.size());
+bool load_sessions(const string& assignments_dir, vector<WorkerSession>& sessions) {
+    for (const WorkerAddress& worker : WORKERS) {
+        WorkerSession session;
+        session.worker = worker;
 
-    Packet start = make_packet(PacketType::Start,
-                               transfer_id,
-                               sender_id,
-                               receiver_id,
-                               object_type,
-                               object_size,
-                               total_fragments);
-    start.ack = ACK_NONE;
-
-    if (!send_control_with_ack(sock, address, start, ACK_NONE)) {
-        return false;
-    }
-
-    uint32_t base = 0;
-    uint32_t next = 0;
-    int retries = 0;
-
-    while (base < total_fragments) {
-        while (next < total_fragments && next < base + WINDOW_SIZE) {
-            Packet data = make_data_packet(object,
-                                           transfer_id,
-                                           sender_id,
-                                           receiver_id,
-                                           object_type,
-                                           next,
-                                           total_fragments);
-            if (!send_packet(sock, address, data)) {
-                return false;
-            }
-            ++next;
-        }
-
-        uint32_t ack = ACK_NONE;
-        if (wait_for_ack(sock, address, transfer_id, receiver_id, sender_id, object_type, ack)) {
-            if (ack == ACK_NONE) {
-                base = 0;
-                next = 0;
-            } else if (ack >= base && ack < total_fragments) {
-                base = ack + 1;
-                retries = 0;
-            }
-            continue;
-        }
-
-        ++retries;
-        if (retries > MAX_RETRIES) {
+        memset(&session.address, 0, sizeof(session.address));
+        session.address.sin_family = AF_INET;
+        session.address.sin_port = htons(worker.port);
+        if (inet_pton(AF_INET, worker.host, &session.address.sin_addr) != 1) {
+            cerr << "Worker " << worker.id << ": invalid address\n";
             return false;
         }
-        next = base;
-    }
 
-    Packet end = make_packet(PacketType::End,
-                             transfer_id,
-                             sender_id,
-                             receiver_id,
-                             object_type,
-                             object_size,
-                             total_fragments);
-    end.seq = total_fragments;
-    end.ack = ACK_NONE;
-    return send_control_with_ack(sock, address, end, total_fragments);
+        const string assignment_path = assignments_dir + "/worker_" + to_string(worker.id) + ".bin";
+        if (!read_file(assignment_path, session.assignment.object)) {
+            cerr << "Worker " << worker.id << ": could not read " << assignment_path << "\n";
+            return false;
+        }
+
+        session.assignment.transfer_id = assignment_transfer_id(worker.id);
+        session.assignment.receiver_id = worker.id;
+        session.assignment.object_size = static_cast<uint32_t>(session.assignment.object.size());
+        session.assignment.total_fragments =
+            max<uint32_t>(1, static_cast<uint32_t>(
+                                 (session.assignment.object.size() + MAX_PAYLOAD - 1) / MAX_PAYLOAD));
+
+        session.result.transfer_id = gradient_transfer_id(worker.id);
+        cout << "Worker " << worker.id << ": queued WORK_ASSIGNMENT ("
+             << session.assignment.object.size() << " bytes)\n";
+        sessions.push_back(session);
+    }
+    return true;
 }
 
-bool receive_object(int sock,
-                    const sockaddr_in& address,
-                    uint32_t transfer_id,
-                    uint16_t expected_sender,
-                    uint16_t expected_receiver,
-                    ObjectType object_type,
-                    vector<uint8_t>& object) {
-    bool receiving = false;
-    uint32_t expected_seq = 0;
-    uint32_t total_fragments = 0;
-    uint32_t object_size = 0;
-    vector<uint8_t> received_data;
-    int idle_timeouts = 0;
-
-    while (true) {
-        Packet packet;
-        if (!wait_for_packet(sock, address, packet)) {
-            ++idle_timeouts;
-            if (idle_timeouts > MAX_RETRIES) {
-                return false;
-            }
-            continue;
+bool write_results(const string& results_dir, const vector<WorkerSession>& sessions) {
+    for (const WorkerSession& session : sessions) {
+        const string result_path = results_dir + "/worker_" + to_string(session.worker.id) + ".bin";
+        if (!write_file(result_path, session.result.data)) {
+            cerr << "Worker " << session.worker.id << ": could not write " << result_path << "\n";
+            return false;
         }
-        idle_timeouts = 0;
-
-        if (!matches_transfer(packet, transfer_id, expected_sender, expected_receiver, object_type)) {
-            continue;
-        }
-
-        if (packet.type == PacketType::Start) {
-            receiving = true;
-            expected_seq = 0;
-            total_fragments = packet.total_fragments;
-            object_size = packet.object_size;
-            received_data.clear();
-            send_packet(sock, address, make_ack(packet, ACK_NONE));
-            continue;
-        }
-
-        if (!receiving) {
-            continue;
-        }
-
-        if (packet.type == PacketType::Data) {
-            if (packet.seq == expected_seq &&
-                packet.fragment == expected_seq &&
-                packet.total_fragments == total_fragments &&
-                packet.object_size == object_size) {
-                received_data.insert(received_data.end(), packet.payload.begin(), packet.payload.end());
-                send_packet(sock, address, make_ack(packet, expected_seq));
-                ++expected_seq;
-            } else {
-                const uint32_t last_ack = expected_seq == 0 ? ACK_NONE : expected_seq - 1;
-                send_packet(sock, address, make_ack(packet, last_ack));
-            }
-            continue;
-        }
-
-        if (packet.type == PacketType::End) {
-            if (expected_seq == total_fragments &&
-                packet.seq == total_fragments &&
-                received_data.size() == object_size) {
-                send_packet(sock, address, make_ack(packet, packet.seq));
-                object = received_data;
-                return true;
-            }
-
-            const uint32_t last_ack = expected_seq == 0 ? ACK_NONE : expected_seq - 1;
-            send_packet(sock, address, make_ack(packet, last_ack));
-        }
+        cout << "Worker " << session.worker.id << ": wrote " << session.result.data.size()
+             << " bytes to " << result_path << "\n";
     }
+    return true;
 }
 
-bool process_worker(int sock,
-                    const WorkerAddress& worker,
-                    const string& assignments_dir,
-                    const string& results_dir) {
-    sockaddr_in address {};
-    if (!make_address(worker, address)) {
-        cerr << "Worker " << worker.id << ": invalid address\n";
-        return false;
-    }
+bool run_event_loop(int sock, vector<WorkerSession>& sessions) {
+    while (!all_done(sessions)) {
+        if (any_failed(sessions)) {
+            return false;
+        }
 
-    vector<uint8_t> assignment;
-    const string assignment_path = worker_file_path(assignments_dir, worker.id);
-    if (!read_file(assignment_path, assignment)) {
-        cerr << "Worker " << worker.id << ": could not read " << assignment_path << "\n";
-        return false;
-    }
+        for (WorkerSession& session : sessions) {
+            pump_assignment_sender(sock, session);
+        }
 
-    cout << "Worker " << worker.id << ": sending WORK_ASSIGNMENT ("
-         << assignment.size() << " bytes)\n";
-    if (!send_object(sock,
-                     address,
-                     assignment,
-                     assignment_transfer_id(worker.id),
-                     MASTER_ID,
-                     worker.id,
-                     ObjectType::WorkAssignment)) {
-        cerr << "Worker " << worker.id << ": failed to send WORK_ASSIGNMENT\n";
-        return false;
-    }
+        fd_set read_set;
+        FD_ZERO(&read_set);
+        FD_SET(sock, &read_set);
 
-    cout << "Worker " << worker.id << ": waiting for GRADIENT_RESULT\n";
-    vector<uint8_t> gradient_result;
-    if (!receive_object(sock,
-                        address,
-                        gradient_transfer_id(worker.id),
-                        worker.id,
-                        MASTER_ID,
-                        ObjectType::GradientResult,
-                        gradient_result)) {
-        cerr << "Worker " << worker.id << ": failed to receive GRADIENT_RESULT\n";
-        return false;
-    }
+        timeval timeout {};
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 50000;
 
-    const string result_path = worker_file_path(results_dir, worker.id);
-    if (!write_file(result_path, gradient_result)) {
-        cerr << "Worker " << worker.id << ": could not write " << result_path << "\n";
-        return false;
-    }
+        const int ready = select(sock + 1, &read_set, nullptr, nullptr, &timeout);
+        if (ready <= 0) {
+            continue;
+        }
 
-    cout << "Worker " << worker.id << ": wrote " << gradient_result.size()
-         << " bytes to " << result_path << "\n";
+        while (true) {
+            Datagram datagram;
+            sockaddr_in from {};
+            if (!read_datagram(sock, datagram, from)) {
+                break;
+            }
+
+            WorkerSession* session = find_session(sessions, from, datagram);
+            if (session != nullptr) {
+                if (datagram.type == DatagramType::Ack &&
+                    datagram.transfer_id == session->assignment.transfer_id &&
+                    datagram.object_type == ObjectType::WorkAssignment) {
+                    handle_assignment_ack(*session, datagram);
+                } else {
+                    handle_result_datagram(sock, *session, datagram);
+                }
+            }
+
+            FD_ZERO(&read_set);
+            FD_SET(sock, &read_set);
+            timeval drain_timeout {};
+            const int more = select(sock + 1, &read_set, nullptr, nullptr, &drain_timeout);
+            if (more <= 0) {
+                break;
+            }
+        }
+    }
     return true;
 }
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        cerr << "usage: ./server <assignments_dir> <results_dir>\n";
+        cerr << "usage: ./master <assignments_dir> <results_dir>\n";
         return 1;
     }
 
     const string assignments_dir = argv[1];
     const string results_dir = argv[2];
 
-    if (!ensure_directory(results_dir)) {
+    struct stat info {};
+    const bool results_dir_exists = stat(results_dir.c_str(), &info) == 0;
+    if ((results_dir_exists && !S_ISDIR(info.st_mode)) ||
+        (!results_dir_exists && mkdir(results_dir.c_str(), 0755) != 0)) {
         cerr << "could not create or access results directory: " << results_dir << "\n";
+        return 1;
+    }
+
+    vector<WorkerSession> sessions;
+    if (!load_sessions(assignments_dir, sessions)) {
         return 1;
     }
 
@@ -429,11 +452,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    bool all_ok = true;
-    for (const WorkerAddress& worker : WORKERS) {
-        all_ok = process_worker(sock, worker, assignments_dir, results_dir) && all_ok;
-    }
-
+    const bool ok = run_event_loop(sock, sessions) && write_results(results_dir, sessions);
     close(sock);
-    return all_ok ? 0 : 1;
+    return ok ? 0 : 1;
 }

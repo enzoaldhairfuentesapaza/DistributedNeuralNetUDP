@@ -121,13 +121,13 @@ The Main Server averages the gradients from the 10 workers and its own local par
 
 ## UDP RDT Protocol
 - Pure Go-Back-N over UDP
-- Cumulative ACK packets
+- Cumulative ACK datagrams
 - Sequence numbers
 - Fixed initial timeout
-- Packet retransmission
+- Datagram retransmission
 - CRC32 corruption detection over header and valid payload
 - Lost datagram recovery through timeout and retransmission
-- `ACK_NONE = 0xFFFFFFFF` for the initial state before any valid DATA packet is received
+- `ACK_NONE = 0xFFFFFFFF` for the initial state before any valid DATA datagram is received
 
 ---
 
@@ -142,7 +142,7 @@ Header:  36 bytes
 Payload: up to 476 bytes
 ```
 
-## Packet Types
+## Datagram Types
 - START
 - DATA
 - ACK
@@ -154,7 +154,7 @@ Payload: up to 476 bytes
 - `CONTROL`: reserved for future application-level control messages
 
 ## Datagram Header Fields
-- Packet type
+- Datagram type
 - Sequence number
 - ACK number
 - Transfer ID
@@ -174,8 +174,8 @@ Payload: up to 476 bytes
 - Retransmission mechanism
 - CRC32 integrity validation
 - Sequence synchronization
-- Duplicate and out-of-order packet detection
-- No NACK packets
+- Duplicate and out-of-order datagram detection
+- No NACK datagrams
 
 ---
 
@@ -201,7 +201,7 @@ The implementation is expected to keep the neural network/training logic in Pyth
 The timeout value is fixed and selected based on network testing and research.
 
 The timeout mechanism is responsible for:
-- Detecting lost packets
+- Detecting lost datagrams
 - Triggering retransmissions
 - Maintaining synchronization
 
@@ -217,7 +217,7 @@ Complete explanation of:
 - Go-Back-N window behavior
 - Timeout handling
 - Error detection
-- Packet retransmission
+- Datagram retransmission
 - Object serialization model
 - `WORK_ASSIGNMENT` and `GRADIENT_RESULT` application objects
 
