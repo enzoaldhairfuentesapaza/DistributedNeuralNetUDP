@@ -17,7 +17,9 @@
 
 using namespace std;
 
-bool wait_for_datagram(int sock, Datagram& datagram, sockaddr_in& from) {
+bool wait_for_datagram(int sock, Datagram& datagram, sockaddr_in& from, bool& corrupt) {
+    corrupt = false;
+
     fd_set read_set;
     FD_ZERO(&read_set);
     FD_SET(sock, &read_set);
@@ -39,7 +41,11 @@ bool wait_for_datagram(int sock, Datagram& datagram, sockaddr_in& from) {
         return false;
     }
 
-    return parse_datagram(buffer, static_cast<size_t>(received), datagram);
+    if (!parse_datagram(buffer, static_cast<size_t>(received), datagram)) {
+        corrupt = true;
+        return false;
+    }
+    return true;
 }
 
 bool receive_object(int sock, uint32_t transfer_id, uint16_t expected_sender,
@@ -54,7 +60,17 @@ bool receive_object(int sock, uint32_t transfer_id, uint16_t expected_sender,
     while (true) {
         Datagram datagram;
         sockaddr_in from {};
-        if (!wait_for_datagram(sock, datagram, from)) {
+        bool corrupt = false;
+        if (!wait_for_datagram(sock, datagram, from, corrupt)) {
+            if (corrupt && (!receiving || same_address(from, peer_address))) {
+                const uint32_t last_ack = expected_seq == 0 ? ACK_NONE : expected_seq - 1;
+                send_datagram(sock,
+                              receiving ? peer_address : from,
+                              make_ack_datagram(transfer_id,
+                                                expected_receiver,
+                                                expected_sender,
+                                                last_ack));
+            }
             continue;
         }
 
@@ -75,7 +91,12 @@ bool receive_object(int sock, uint32_t transfer_id, uint16_t expected_sender,
             total_fragments = datagram.total_fragments;
             object_size = datagram.object_size;
             received_data.clear();
-            send_datagram(sock, peer_address, make_ack_datagram(datagram, ACK_NONE));
+            send_datagram(sock,
+                          peer_address,
+                          make_ack_datagram(datagram.transfer_id,
+                                            datagram.receiver_id,
+                                            datagram.sender_id,
+                                            ACK_NONE));
             continue;
         }
 
@@ -87,11 +108,21 @@ bool receive_object(int sock, uint32_t transfer_id, uint16_t expected_sender,
             if (datagram.seq == expected_seq &&
                 datagram.fragment == expected_seq) {
                 received_data.insert(received_data.end(), datagram.payload.begin(), datagram.payload.end());
-                send_datagram(sock, peer_address, make_ack_datagram(datagram, expected_seq));
+                send_datagram(sock,
+                              peer_address,
+                              make_ack_datagram(datagram.transfer_id,
+                                                datagram.receiver_id,
+                                                datagram.sender_id,
+                                                expected_seq));
                 ++expected_seq;
             } else {
                 const uint32_t last_ack = expected_seq == 0 ? ACK_NONE : expected_seq - 1;
-                send_datagram(sock, peer_address, make_ack_datagram(datagram, last_ack));
+                send_datagram(sock,
+                              peer_address,
+                              make_ack_datagram(datagram.transfer_id,
+                                                datagram.receiver_id,
+                                                datagram.sender_id,
+                                                last_ack));
             }
             continue;
         }
@@ -100,13 +131,23 @@ bool receive_object(int sock, uint32_t transfer_id, uint16_t expected_sender,
             if (expected_seq == total_fragments &&
                 datagram.seq == total_fragments &&
                 received_data.size() == object_size) {
-                send_datagram(sock, peer_address, make_ack_datagram(datagram, datagram.seq));
+                send_datagram(sock,
+                              peer_address,
+                              make_ack_datagram(datagram.transfer_id,
+                                                datagram.receiver_id,
+                                                datagram.sender_id,
+                                                datagram.seq));
                 object = received_data;
                 return true;
             }
 
             const uint32_t last_ack = expected_seq == 0 ? ACK_NONE : expected_seq - 1;
-            send_datagram(sock, peer_address, make_ack_datagram(datagram, last_ack));
+            send_datagram(sock,
+                          peer_address,
+                          make_ack_datagram(datagram.transfer_id,
+                                            datagram.receiver_id,
+                                            datagram.sender_id,
+                                            last_ack));
         }
     }
 }
@@ -116,16 +157,18 @@ bool wait_for_ack(int sock,
                   uint32_t transfer_id,
                   uint16_t expected_sender,
                   uint16_t expected_receiver,
-                  ObjectType object_type,
                   uint32_t& ack_value) {
     Datagram datagram;
     sockaddr_in from {};
-    if (!wait_for_datagram(sock, datagram, from) || !same_address(from, address)) {
+    bool corrupt = false;
+    if (!wait_for_datagram(sock, datagram, from, corrupt) || !same_address(from, address)) {
         return false;
     }
 
     if (datagram.type != DatagramType::Ack ||
-        !matches_transfer(datagram, transfer_id, expected_sender, expected_receiver, object_type)) {
+        datagram.transfer_id != transfer_id ||
+        datagram.sender_id != expected_sender ||
+        datagram.receiver_id != expected_receiver) {
         return false;
     }
 
@@ -148,7 +191,6 @@ bool send_control_with_ack(int sock,
                          datagram.transfer_id,
                          datagram.receiver_id,
                          datagram.sender_id,
-                         datagram.object_type,
                          ack) &&
             ack == expected_ack) {
             return true;
@@ -175,7 +217,6 @@ bool send_object(int sock,
                                object_type,
                                object_size,
                                total_fragments);
-    start.ack = ACK_NONE;
 
     if (!send_control_with_ack(sock, address, start, ACK_NONE)) {
         return false;
@@ -201,7 +242,7 @@ bool send_object(int sock,
         }
 
         uint32_t ack = ACK_NONE;
-        if (wait_for_ack(sock, address, transfer_id, receiver_id, sender_id, object_type, ack)) {
+        if (wait_for_ack(sock, address, transfer_id, receiver_id, sender_id, ack)) {
             if (ack == ACK_NONE) {
                 base = 0;
                 next = 0;
@@ -227,7 +268,6 @@ bool send_object(int sock,
                              object_size,
                              total_fragments);
     end.seq = total_fragments;
-    end.ack = ACK_NONE;
     return send_control_with_ack(sock, address, end, total_fragments);
 }
 

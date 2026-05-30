@@ -95,7 +95,9 @@ bool write_file(const string& path, const vector<uint8_t>& data) {
     return file.good();
 }
 
-bool read_datagram(int sock, Datagram& datagram, sockaddr_in& from) {
+bool read_datagram(int sock, Datagram& datagram, sockaddr_in& from, bool& corrupt) {
+    corrupt = false;
+
     uint8_t buffer[DATAGRAM_SIZE];
     socklen_t from_len = sizeof(from);
     const ssize_t received = recvfrom(sock, buffer, sizeof(buffer), 0,
@@ -103,7 +105,12 @@ bool read_datagram(int sock, Datagram& datagram, sockaddr_in& from) {
     if (received < 0) {
         return false;
     }
-    return parse_datagram(buffer, static_cast<size_t>(received), datagram);
+
+    if (!parse_datagram(buffer, static_cast<size_t>(received), datagram)) {
+        corrupt = true;
+        return false;
+    }
+    return true;
 }
 
 bool send_control_datagram(int sock, WorkerSession& session, DatagramType type) {
@@ -118,7 +125,6 @@ bool send_control_datagram(int sock, WorkerSession& session, DatagramType type) 
     if (type == DatagramType::End) {
         datagram.seq = state.total_fragments;
     }
-    datagram.ack = ACK_NONE;
 
     if (!send_datagram(sock, session.address, datagram)) {
         cerr << "Worker " << session.worker.id << ": failed to send "
@@ -241,7 +247,12 @@ void handle_result_datagram(int sock, WorkerSession& session, const Datagram& da
     ReceiveState& state = session.result;
     if (state.done) {
         if (datagram.type == DatagramType::End) {
-            send_datagram(sock, session.address, make_ack_datagram(datagram, datagram.seq));
+            send_datagram(sock,
+                          session.address,
+                          make_ack_datagram(datagram.transfer_id,
+                                            datagram.receiver_id,
+                                            datagram.sender_id,
+                                            datagram.seq));
         }
         return;
     }
@@ -257,7 +268,12 @@ void handle_result_datagram(int sock, WorkerSession& session, const Datagram& da
         state.total_fragments = datagram.total_fragments;
         state.object_size = datagram.object_size;
         state.data.clear();
-        send_datagram(sock, session.address, make_ack_datagram(datagram, ACK_NONE));
+        send_datagram(sock,
+                      session.address,
+                      make_ack_datagram(datagram.transfer_id,
+                                        datagram.receiver_id,
+                                        datagram.sender_id,
+                                        ACK_NONE));
         cout << "Worker " << session.worker.id << ": receiving GRADIENT_RESULT ("
              << state.object_size << " bytes)\n";
         return;
@@ -271,11 +287,21 @@ void handle_result_datagram(int sock, WorkerSession& session, const Datagram& da
         if (datagram.seq == state.expected_seq &&
             datagram.fragment == state.expected_seq) {
             state.data.insert(state.data.end(), datagram.payload.begin(), datagram.payload.end());
-            send_datagram(sock, session.address, make_ack_datagram(datagram, state.expected_seq));
+            send_datagram(sock,
+                          session.address,
+                          make_ack_datagram(datagram.transfer_id,
+                                            datagram.receiver_id,
+                                            datagram.sender_id,
+                                            state.expected_seq));
             ++state.expected_seq;
         } else {
             const uint32_t last_ack = state.expected_seq == 0 ? ACK_NONE : state.expected_seq - 1;
-            send_datagram(sock, session.address, make_ack_datagram(datagram, last_ack));
+            send_datagram(sock,
+                          session.address,
+                          make_ack_datagram(datagram.transfer_id,
+                                            datagram.receiver_id,
+                                            datagram.sender_id,
+                                            last_ack));
         }
         return;
     }
@@ -284,14 +310,24 @@ void handle_result_datagram(int sock, WorkerSession& session, const Datagram& da
         if (state.expected_seq == state.total_fragments &&
             datagram.seq == state.total_fragments &&
             state.data.size() == state.object_size) {
-            send_datagram(sock, session.address, make_ack_datagram(datagram, datagram.seq));
+            send_datagram(sock,
+                          session.address,
+                          make_ack_datagram(datagram.transfer_id,
+                                            datagram.receiver_id,
+                                            datagram.sender_id,
+                                            datagram.seq));
             state.done = true;
             cout << "Worker " << session.worker.id << ": GRADIENT_RESULT received\n";
             return;
         }
 
         const uint32_t last_ack = state.expected_seq == 0 ? ACK_NONE : state.expected_seq - 1;
-        send_datagram(sock, session.address, make_ack_datagram(datagram, last_ack));
+        send_datagram(sock,
+                      session.address,
+                      make_ack_datagram(datagram.transfer_id,
+                                        datagram.receiver_id,
+                                        datagram.sender_id,
+                                        last_ack));
     }
 }
 
@@ -300,6 +336,15 @@ WorkerSession* find_session(vector<WorkerSession>& sessions, const sockaddr_in& 
         if (same_address(session.address, from) &&
             datagram.sender_id == session.worker.id &&
             datagram.receiver_id == MASTER_ID) {
+            return &session;
+        }
+    }
+    return nullptr;
+}
+
+WorkerSession* find_session_by_address(vector<WorkerSession>& sessions, const sockaddr_in& from) {
+    for (WorkerSession& session : sessions) {
+        if (same_address(session.address, from)) {
             return &session;
         }
     }
@@ -397,7 +442,22 @@ bool run_event_loop(int sock, vector<WorkerSession>& sessions) {
         while (true) {
             Datagram datagram;
             sockaddr_in from {};
-            if (!read_datagram(sock, datagram, from)) {
+            bool corrupt = false;
+            if (!read_datagram(sock, datagram, from, corrupt)) {
+                if (corrupt) {
+                    WorkerSession* session = find_session_by_address(sessions, from);
+                    if (session != nullptr) {
+                        ReceiveState& result = session->result;
+                        const uint32_t last_ack =
+                            result.expected_seq == 0 ? ACK_NONE : result.expected_seq - 1;
+                        send_datagram(sock,
+                                      session->address,
+                                      make_ack_datagram(result.transfer_id,
+                                                        MASTER_ID,
+                                                        session->worker.id,
+                                                        last_ack));
+                    }
+                }
                 break;
             }
 
@@ -405,7 +465,8 @@ bool run_event_loop(int sock, vector<WorkerSession>& sessions) {
             if (session != nullptr) {
                 if (datagram.type == DatagramType::Ack &&
                     datagram.transfer_id == session->assignment.transfer_id &&
-                    datagram.object_type == ObjectType::WorkAssignment) {
+                    datagram.sender_id == session->worker.id &&
+                    datagram.receiver_id == MASTER_ID) {
                     handle_assignment_ack(*session, datagram);
                 } else {
                     handle_result_datagram(sock, *session, datagram);

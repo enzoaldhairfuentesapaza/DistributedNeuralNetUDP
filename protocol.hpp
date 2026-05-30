@@ -41,7 +41,7 @@ static_assert(MAX_PAYLOAD == 476, "Protocol payload size must match the manual")
 struct Datagram {
     DatagramType type = DatagramType::Data;
     uint32_t seq = 0;
-    uint32_t ack = ACK_NONE;
+    uint32_t ack = 0;
     uint32_t transfer_id = 0;
     uint16_t sender_id = 0;
     uint16_t receiver_id = 0;
@@ -80,6 +80,7 @@ inline Datagram make_datagram(DatagramType type,
                           uint32_t total_fragments) {
     Datagram datagram;
     datagram.type = type;
+    datagram.ack = 0;
     datagram.transfer_id = transfer_id;
     datagram.sender_id = sender_id;
     datagram.receiver_id = receiver_id;
@@ -89,14 +90,17 @@ inline Datagram make_datagram(DatagramType type,
     return datagram;
 }
 
-inline Datagram make_ack_datagram(const Datagram& received, uint32_t ack_value) {
+inline Datagram make_ack_datagram(uint32_t transfer_id,
+                                  uint16_t sender_id,
+                                  uint16_t receiver_id,
+                                  uint32_t ack_value) {
     Datagram datagram = make_datagram(DatagramType::Ack,
-                                received.transfer_id,
-                                received.receiver_id,
-                                received.sender_id,
-                                received.object_type,
-                                received.object_size,
-                                received.total_fragments);
+                                      transfer_id,
+                                      sender_id,
+                                      receiver_id,
+                                      ObjectType::None,
+                                      0,
+                                      0);
     datagram.ack = ack_value;
     return datagram;
 }
@@ -240,7 +244,7 @@ inline bool parse_datagram(const uint8_t* data, size_t length, Datagram& datagra
          << " \nfragment=" << datagram.fragment
          << " \ntotal_fragments=" << datagram.total_fragments
          << " \npayload_size=" << payload_size
-          << " \npayload=" << std::string(datagram.payload.begin(), datagram.payload.end())
+          << " \npayload=" << std::string(datagram.payload.begin(), datagram.payload.end()).substr(0, 50)
          << "\n\n";
     return true;
 }
@@ -265,7 +269,7 @@ inline bool send_datagram(int sock, const sockaddr_in& address, const Datagram& 
          << " \nfragment=" << datagram.fragment
          << " \ntotal_fragments=" << datagram.total_fragments
          << " \npayload_size=" << datagram.payload.size()
-         << " \npayload=" << std::string(datagram.payload.begin(), datagram.payload.end())
+         << " \npayload=" << std::string(datagram.payload.begin(), datagram.payload.end()).substr(0, 50)
          << "\n\n";
     return sent == static_cast<ssize_t>(bytes.size());
 }
