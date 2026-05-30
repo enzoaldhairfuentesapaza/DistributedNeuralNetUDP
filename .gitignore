@@ -11,5 +11,4 @@ master
 worker
 
 #test files
-test_udp/
 test.txt
