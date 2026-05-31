@@ -2,6 +2,7 @@
 
 # Compiled binaries
 *.o
+*.a
 *.out
 *.exe
 *.dSYM/
@@ -12,3 +13,4 @@ worker
 
 #test files
 test.txt
+test_udp/
