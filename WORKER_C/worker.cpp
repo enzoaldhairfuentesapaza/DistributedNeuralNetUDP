@@ -1,4 +1,4 @@
-#include "protocol.hpp"
+#include "../shared/protocol.hpp"
 
 #include <errno.h>
 #include <netinet/in.h>
@@ -58,10 +58,24 @@ bool receive_object(int sock, uint32_t transfer_id, uint16_t expected_sender,
             continue;
         }
 
-        if (!matches_transfer(datagram, transfer_id, expected_sender, expected_receiver, object_type)) {
+        /*if (!matches_transfer(datagram, transfer_id, expected_sender, expected_receiver, object_type)) {
+            continue;
+        }*/
+        if (!matches_transfer(datagram, transfer_id, expected_sender, expected_receiver, object_type))
+        {
+            cout
+                << "Woerker "
+                << " ignored packet:"
+                << " transfer="
+                << datagram.transfer_id
+                << " sender="
+                << datagram.sender_id
+                << " receiver="
+                << datagram.receiver_id
+                << endl;
+
             continue;
         }
-
         if (!receiving) {
             peer_address = from;
         } else if (!same_address(from, peer_address)) {
@@ -298,6 +312,19 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // --- Cargar worker_train.py -----------------
+    cout << "Launching worker_train.py...\n";
+    string command = "python3 ./worker_train.py " + assignment_output_path + " " + gradient_path;
+    int result = system(command.c_str());
+
+    if (result != 0)
+    {
+        cerr << "worker_train.py failed\n";
+        close(sock);
+        return 1;
+    }
+    // -----------------------------------------
 
     vector<uint8_t> gradient_result;
     ifstream gradient_file(gradient_path, ios::binary);

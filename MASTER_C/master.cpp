@@ -1,4 +1,4 @@
-#include "protocol.hpp"
+#include "../shared/protocol.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -27,15 +27,15 @@ struct WorkerAddress {
 
 const WorkerAddress WORKERS[] = {
     {"127.0.0.1", 9001, 1},
-    {"127.0.0.1", 9002, 2},
-    {"127.0.0.1", 9003, 3},
-    {"127.0.0.1", 9004, 4},
-    {"127.0.0.1", 9005, 5},
-    {"127.0.0.1", 9006, 6},
-    {"127.0.0.1", 9007, 7},
-    {"127.0.0.1", 9008, 8},
-    {"127.0.0.1", 9009, 9},
-    {"127.0.0.1", 9010, 10},
+    {"127.0.0.1", 9002, 2}//,
+    //{"127.0.0.1", 9003, 3},
+    //{"127.0.0.1", 9004, 4},
+    //{"127.0.0.1", 9005, 5},
+    //{"127.0.0.1", 9006, 6},
+    //{"127.0.0.1", 9007, 7},
+    //{"127.0.0.1", 9008, 8},
+    //{"127.0.0.1", 9009, 9},
+    //{"127.0.0.1", 9010, 10},
 };
 
 enum class SendPhase {
@@ -338,7 +338,8 @@ bool load_sessions(const string& assignments_dir, vector<WorkerSession>& session
         }
 
         const string assignment_path = assignments_dir + "/worker_" + to_string(worker.id) + ".bin";
-        if (!read_file(assignment_path, session.assignment.object)) {
+        if (!read_file(assignment_path, session.assignment.object)) 
+        {
             cerr << "Worker " << worker.id << ": could not read " << assignment_path << "\n";
             return false;
         }
