@@ -1,0 +1,19 @@
+.DS_Store
+
+# Compiled binaries
+*.o
+*.a
+*.out
+*.exe
+*.dSYM/
+
+# Project binaries
+master
+worker
+
+# Python virtual environment
+.venv
+
+#test files
+test.txt
+test_udp/

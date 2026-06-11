@@ -1,0 +1,3 @@
+worker: waiting assignment
+worker: got assignment len= 17
+worker: sent gradient
