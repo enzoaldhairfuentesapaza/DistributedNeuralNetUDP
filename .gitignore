@@ -1,15 +1,4 @@
-.DS_Store
-
-# Compiled binaries
-*.o
-*.out
-*.exe
-*.dSYM/
-
-# Project binaries
-master
-worker
-
-#test files
-test_udp/
-test.txt
+.venv/
+*.so
+__pycache__/
+build/
