@@ -8,6 +8,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <sstream>
 
 using namespace std;
 
@@ -48,28 +49,111 @@ int main(int argc, char* argv[]) {
 
     try {
         API_RDT_UDP::WorkerTransport worker(worker_id);
-        cout << "Worker " << worker_id << " listening on 127.0.0.1:"
-             << static_cast<int>(9000 + worker_id) << "\n";
 
-        const API_RDT_UDP::Bytes assignment = worker.receive_assignment();
-        cout << "Worker " << worker_id << ": received WORK_ASSIGNMENT ("
-             << assignment.size() << " bytes)\n";
+        cout << "Worker " << worker_id
+            << " listening on 127.0.0.1:"
+            << static_cast<int>(9000 + worker_id)
+            << "\n";
+        cout << "WORKER BUILD: PERSISTENT MODE ENABLED"
+            << endl;
 
-        if (save_assignment && !write_file(assignment_output_path, assignment)) {
-            cerr << "Worker " << worker_id << ": could not write " << assignment_output_path << "\n";
-            return 1;
+        while (true)
+        {
+            const API_RDT_UDP::Bytes assignment =
+                worker.receive_assignment();
+
+            cout
+                << "Worker "
+                << worker_id
+                << ": received WORK_ASSIGNMENT ("
+                << assignment.size()
+                << " bytes)\n";
+
+            if (!save_assignment)
+            {
+                cerr
+                    << "Worker "
+                    << worker_id
+                    << ": assignment output path required\n";
+
+                return 1;
+            }
+
+            if (!write_file(
+                    assignment_output_path,
+                    assignment))
+            {
+                cerr
+                    << "Worker "
+                    << worker_id
+                    << ": could not write "
+                    << assignment_output_path
+                    << "\n";
+
+                return 1;
+            }
+
+            stringstream command;
+
+            command
+                << ".venv/bin/python "
+                << "worker_runtime_server.py "
+                << assignment_output_path
+                << " "
+                << gradient_path;
+
+            cout
+                << "Worker "
+                << worker_id
+                << ": running "
+                << command.str()
+                << "\n";
+
+            const int status =
+                system(command.str().c_str());
+
+            if (status != 0)
+            {
+                cerr
+                    << "Worker "
+                    << worker_id
+                    << ": python worker failed\n";
+
+                continue;
+            }
+
+            API_RDT_UDP::Bytes gradient_result;
+
+            if (!read_file(
+                    gradient_path,
+                    gradient_result))
+            {
+                cerr
+                    << "Worker "
+                    << worker_id
+                    << ": could not read "
+                    << gradient_path
+                    << "\n";
+
+                continue;
+            }
+
+            cout
+                << "Worker "
+                << worker_id
+                << ": sending GRADIENT_RESULT ("
+                << gradient_result.size()
+                << " bytes)\n";
+
+            worker.send_gradient(
+                gradient_result
+            );
+
+            cout
+                << "Worker "
+                << worker_id
+                << ": transfer complete\n";
         }
-
-        API_RDT_UDP::Bytes gradient_result;
-        if (!read_file(gradient_path, gradient_result)) {
-            cerr << "Worker " << worker_id << ": could not read " << gradient_path << "\n";
-            return 1;
-        }
-
-        cout << "Worker " << worker_id << ": sending GRADIENT_RESULT ("
-             << gradient_result.size() << " bytes)\n";
-        worker.send_gradient(gradient_result);
-        cout << "Worker " << worker_id << ": transfer complete\n";
     } catch (const exception& error) {
         cerr << "Worker " << worker_id << ": " << error.what() << "\n";
         return 1;

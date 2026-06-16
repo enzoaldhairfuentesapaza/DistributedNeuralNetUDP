@@ -11,6 +11,11 @@
 master
 worker
 
-#test files
+# Test files
 test.txt
 test_udp/
+
+# Python
+.venv/
+__pycache__/
+*.pyc

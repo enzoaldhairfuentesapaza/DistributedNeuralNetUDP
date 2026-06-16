@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <iostream>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -208,6 +209,17 @@ void handle_assignment_ack(WorkerSession& session, const Datagram& datagram) {
 
 void handle_result_datagram(int sock, WorkerSession& session, const Datagram& datagram) {
     ReceiveState& state = session.result;
+    if (datagram.type == DatagramType::End)
+    {
+        std::cout
+            << "Worker "
+            << session.worker.id
+            << ": received GRADIENT_RESULT ("
+            << state.data.size()
+            << " bytes)"
+            << std::endl;
+    }
+
     if (state.done) {
         if (datagram.type == DatagramType::End) {
             send_datagram(sock,

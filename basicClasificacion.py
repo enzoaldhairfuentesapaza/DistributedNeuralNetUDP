@@ -52,7 +52,7 @@ y = torch.nn.functional.one_hot(active_indices, num_classes=num_classes).float()
 #y = torch.randint(0, num_classes, (num_samples * num_classes,)).view(num_samples, num_classes)
 
 # Load dataset from CSV
-csv_path = "/Users/ivansardonmedina/Code/Redes/UDP-prot/cpp_python_example/Dataset of Diabetes.csv"  # replace with your actual CSV file path   1000,13,3,50
+csv_path = "Dataset of Diabetes.csv"  # replace with your actual CSV file path   1000,13,3,50
 
 df = pd.read_csv(csv_path,header=None, skiprows=1)
 
