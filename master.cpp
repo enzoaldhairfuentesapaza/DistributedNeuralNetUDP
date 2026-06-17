@@ -1,4 +1,4 @@
-#include "API_RDT_UDP.hpp"
+#include "protocolo/API_RDT_UDP.hpp"
 
 #include <sys/stat.h>
 
@@ -12,7 +12,7 @@
 
 using namespace std;
 
-bool read_file(const string& path, API_RDT_UDP::Bytes& data) {
+bool read_file(const string& path, Bytes& data) {
     ifstream file(path, ios::binary);
     if (!file) {
         return false;
@@ -21,7 +21,7 @@ bool read_file(const string& path, API_RDT_UDP::Bytes& data) {
     return true;
 }
 
-bool write_file(const string& path, const API_RDT_UDP::Bytes& data) {
+bool write_file(const string& path, const Bytes& data) {
     ofstream file(path, ios::binary);
     if (!file) {
         return false;
@@ -32,46 +32,47 @@ bool write_file(const string& path, const API_RDT_UDP::Bytes& data) {
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        cerr << "usage: ./master <assignments_dir> <results_dir>\n";
+        cerr << "usage: ./master <worker_payloads_dir> <master_payloads_dir>\n";
         return 1;
     }
 
-    const string assignments_dir = argv[1];
-    const string results_dir = argv[2];
+    const string worker_payloads_dir = argv[1];
+    const string master_payloads_dir = argv[2];
 
     struct stat info {};
-    const bool results_dir_exists = stat(results_dir.c_str(), &info) == 0;
-    if ((results_dir_exists && !S_ISDIR(info.st_mode)) ||
-        (!results_dir_exists && mkdir(results_dir.c_str(), 0755) != 0)) {
-        cerr << "could not create or access results directory: " << results_dir << "\n";
+    const bool master_payloads_dir_exists = stat(master_payloads_dir.c_str(), &info) == 0;
+    if ((master_payloads_dir_exists && !S_ISDIR(info.st_mode)) ||
+        (!master_payloads_dir_exists && mkdir(master_payloads_dir.c_str(), 0755) != 0)) {
+        cerr << "could not create or access master_payloads directory: " << master_payloads_dir << "\n";
         return 1;
     }
 
-    map<uint16_t, API_RDT_UDP::Bytes> assignments;
-    for (const API_RDT_UDP::WorkerEndpoint& worker : API_RDT_UDP::default_workers()) {
-        const string assignment_path = assignments_dir + "/worker_" + to_string(worker.id) + ".bin";
-        API_RDT_UDP::Bytes assignment;
-        if (!read_file(assignment_path, assignment)) {
-            cerr << "Worker " << worker.id << ": could not read " << assignment_path << "\n";
+    map<uint16_t, Bytes> worker_payloads;
+    for (const WorkerEndpoint& worker : default_workers()) {
+        const string worker_payload_path = worker_payloads_dir + "/worker_" + to_string(worker.id) + ".bin";
+        Bytes worker_payload;
+        if (!read_file(worker_payload_path, worker_payload)) {
+            cerr << "Worker " << worker.id << ": could not read " << worker_payload_path << "\n";
             return 1;
         }
-        assignments[worker.id] = assignment;
-        cout << "Worker " << worker.id << ": queued WORK_ASSIGNMENT ("
-             << assignment.size() << " bytes)\n";
+        worker_payloads[worker.id] = worker_payload;
+        cout << "Worker " << worker.id << ": queued WORKER_PAYLOAD ("
+             << worker_payload.size() << " bytes)\n";
     }
 
     try {
-        API_RDT_UDP::MasterTransport master;
-        const map<uint16_t, API_RDT_UDP::Bytes> results = master.exchange(assignments);
+        MasterTransport master;
+        const map<uint16_t, Bytes> master_payloads = master.exchange(worker_payloads);
 
-        for (const auto& result : results) {
-            const string result_path = results_dir + "/worker_" + to_string(result.first) + ".bin";
-            if (!write_file(result_path, result.second)) {
-                cerr << "Worker " << result.first << ": could not write " << result_path << "\n";
+        for (const auto& payload : master_payloads) {
+            const string master_payload_path =
+                master_payloads_dir + "/worker_" + to_string(payload.first) + ".bin";
+            if (!write_file(master_payload_path, payload.second)) {
+                cerr << "Worker " << payload.first << ": could not write " << master_payload_path << "\n";
                 return 1;
             }
-            cout << "Worker " << result.first << ": wrote " << result.second.size()
-                 << " bytes to " << result_path << "\n";
+            cout << "Worker " << payload.first << ": wrote " << payload.second.size()
+                 << " bytes to " << master_payload_path << "\n";
         }
     } catch (const exception& error) {
         cerr << error.what() << "\n";

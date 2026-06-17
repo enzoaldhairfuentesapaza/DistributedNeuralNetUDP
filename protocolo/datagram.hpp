@@ -15,17 +15,14 @@ enum class DatagramType : uint8_t {
 
 enum class ObjectType : uint8_t {
     None = 0x00,
-    WorkAssignment = 0x01,
-    GradientResult = 0x02,
-    Control = 0x03,
+    WorkerPayload = 0x01,
+    MasterPayload = 0x02,
 };
 
 constexpr uint32_t ACK_NONE = 0xFFFFFFFFu;
-constexpr size_t DATAGRAM_SIZE = 512;
-constexpr size_t HEADER_SIZE = 36;
+constexpr size_t DATAGRAM_SIZE = 500;
+constexpr size_t HEADER_SIZE = 28;
 constexpr size_t MAX_PAYLOAD = DATAGRAM_SIZE - HEADER_SIZE;
-
-static_assert(MAX_PAYLOAD == 476, "Datagram payload size must match the manual");
 
 struct Datagram {
     DatagramType type = DatagramType::Data;
@@ -36,29 +33,23 @@ struct Datagram {
     uint16_t receiver_id = 0;
     ObjectType object_type = ObjectType::None;
     uint32_t object_size = 0;
-    uint32_t fragment = 0;
-    uint32_t total_fragments = 0;
     std::vector<uint8_t> payload;
 };
 
-inline bool matches_transfer(const Datagram& datagram,
-                             uint32_t transfer_id,
-                             uint16_t expected_sender,
-                             uint16_t expected_receiver,
-                             ObjectType object_type) {
+inline uint32_t fragment_count(uint32_t object_size) {
+    return std::max<uint32_t>(1, object_size / MAX_PAYLOAD + (object_size % MAX_PAYLOAD != 0));
+}
+
+inline bool matches_transfer(const Datagram& datagram, uint32_t transfer_id, uint16_t expected_sender,
+                        uint16_t expected_receiver, ObjectType object_type) {
     return datagram.transfer_id == transfer_id &&
            datagram.sender_id == expected_sender &&
            datagram.receiver_id == expected_receiver &&
            datagram.object_type == object_type;
 }
 
-inline Datagram make_datagram(DatagramType type,
-                              uint32_t transfer_id,
-                              uint16_t sender_id,
-                              uint16_t receiver_id,
-                              ObjectType object_type,
-                              uint32_t object_size,
-                              uint32_t total_fragments) {
+inline Datagram make_datagram(DatagramType type, uint32_t transfer_id, uint16_t sender_id, uint16_t receiver_id,
+                              ObjectType object_type, uint32_t object_size) {
     Datagram datagram;
     datagram.type = type;
     datagram.ack = 0;
@@ -67,41 +58,23 @@ inline Datagram make_datagram(DatagramType type,
     datagram.receiver_id = receiver_id;
     datagram.object_type = object_type;
     datagram.object_size = object_size;
-    datagram.total_fragments = total_fragments;
     return datagram;
 }
 
-inline Datagram make_ack_datagram(uint32_t transfer_id,
-                                  uint16_t sender_id,
-                                  uint16_t receiver_id,
-                                  uint32_t ack_value) {
-    Datagram datagram = make_datagram(DatagramType::Ack,
-                                      transfer_id,
-                                      sender_id,
-                                      receiver_id,
-                                      ObjectType::None,
-                                      0,
-                                      0);
+inline Datagram make_ack_datagram(uint32_t transfer_id, uint16_t sender_id,
+                                  uint16_t receiver_id, uint32_t ack_value) {
+    Datagram datagram = make_datagram(DatagramType::Ack, transfer_id, sender_id, receiver_id,
+                                      ObjectType::None, 0);
     datagram.ack = ack_value;
     return datagram;
 }
 
-inline Datagram make_data_datagram(const std::vector<uint8_t>& object,
-                                   uint32_t transfer_id,
-                                   uint16_t sender_id,
-                                   uint16_t receiver_id,
-                                   ObjectType object_type,
-                                   uint32_t index,
-                                   uint32_t total_fragments) {
-    Datagram datagram = make_datagram(DatagramType::Data,
-                                      transfer_id,
-                                      sender_id,
-                                      receiver_id,
-                                      object_type,
-                                      static_cast<uint32_t>(object.size()),
-                                      total_fragments);
+inline Datagram make_data_datagram(const std::vector<uint8_t>& object, uint32_t transfer_id,
+                                   uint16_t sender_id, uint16_t receiver_id, ObjectType object_type,
+                                   uint32_t index) {
+    Datagram datagram = make_datagram(DatagramType::Data, transfer_id, sender_id, receiver_id,
+                                      object_type, static_cast<uint32_t>(object.size()));
     datagram.seq = index;
-    datagram.fragment = index;
 
     const size_t start = static_cast<size_t>(index) * MAX_PAYLOAD;
     const size_t end = std::min(start + MAX_PAYLOAD, object.size());
@@ -153,9 +126,8 @@ inline bool valid_datagram_type(uint8_t value) {
 
 inline bool valid_object_type(uint8_t value) {
     return value == static_cast<uint8_t>(ObjectType::None) ||
-           value == static_cast<uint8_t>(ObjectType::WorkAssignment) ||
-           value == static_cast<uint8_t>(ObjectType::GradientResult) ||
-           value == static_cast<uint8_t>(ObjectType::Control);
+           value == static_cast<uint8_t>(ObjectType::WorkerPayload) ||
+           value == static_cast<uint8_t>(ObjectType::MasterPayload);
 }
 
 inline std::vector<uint8_t> serialize_datagram(const Datagram& datagram) {
@@ -170,14 +142,12 @@ inline std::vector<uint8_t> serialize_datagram(const Datagram& datagram) {
     write2bytes(buffer, 15, datagram.receiver_id);
     buffer[17] = static_cast<uint8_t>(datagram.object_type);
     write4bytes(buffer, 18, datagram.object_size);
-    write4bytes(buffer, 22, datagram.fragment);
-    write4bytes(buffer, 26, datagram.total_fragments);
-    write2bytes(buffer, 30, static_cast<uint16_t>(payload_size));
-    write4bytes(buffer, 32, 0);
+    write2bytes(buffer, 22, static_cast<uint16_t>(payload_size));
+    write4bytes(buffer, 24, 0);
 
     std::copy(datagram.payload.begin(), datagram.payload.end(), buffer.begin() + HEADER_SIZE);
 
-    write4bytes(buffer, 32, crc32(buffer.data(), buffer.size()));
+    write4bytes(buffer, 24, crc32(buffer.data(), buffer.size()));
     return buffer;
 }
 
@@ -188,7 +158,7 @@ inline bool parse_datagram(const uint8_t* data, size_t length, Datagram& datagra
 
     const uint8_t raw_type = data[0];
     const uint8_t raw_object_type = data[17];
-    const uint16_t payload_size = read2bytes(data, 30);
+    const uint16_t payload_size = read2bytes(data, 22);
     if (!valid_datagram_type(raw_type) ||
         !valid_object_type(raw_object_type) ||
         payload_size > MAX_PAYLOAD ||
@@ -197,8 +167,8 @@ inline bool parse_datagram(const uint8_t* data, size_t length, Datagram& datagra
     }
 
     std::vector<uint8_t> copy(data, data + length);
-    const uint32_t received_crc = read4bytes(copy.data(), 32);
-    write4bytes(copy, 32, 0);
+    const uint32_t received_crc = read4bytes(copy.data(), 24);
+    write4bytes(copy, 24, 0);
     if (crc32(copy.data(), copy.size()) != received_crc) {
         return false;
     }
@@ -211,8 +181,6 @@ inline bool parse_datagram(const uint8_t* data, size_t length, Datagram& datagra
     datagram.receiver_id = read2bytes(data, 15);
     datagram.object_type = static_cast<ObjectType>(raw_object_type);
     datagram.object_size = read4bytes(data, 18);
-    datagram.fragment = read4bytes(data, 22);
-    datagram.total_fragments = read4bytes(data, 26);
     datagram.payload.assign(data + HEADER_SIZE, data + HEADER_SIZE + payload_size);
     return true;
 }

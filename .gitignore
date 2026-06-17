@@ -14,3 +14,9 @@ worker
 #test files
 test.txt
 test_udp/
+
+
+*.toc
+*.log
+*.aux
+*.gz

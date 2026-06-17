@@ -8,7 +8,6 @@
 #include <string>
 #include <vector>
 
-namespace API_RDT_UDP {
 
 using Bytes = std::vector<uint8_t>;
 
@@ -24,7 +23,7 @@ class MasterTransport {
 public:
     explicit MasterTransport(std::vector<WorkerEndpoint> workers = default_workers());
 
-    std::map<uint16_t, Bytes> exchange(const std::map<uint16_t, Bytes>& assignments) const;
+    std::map<uint16_t, Bytes> exchange(const std::map<uint16_t, Bytes>& worker_payloads) const;
 
 private:
     std::vector<WorkerEndpoint> workers_;
@@ -38,8 +37,8 @@ public:
     WorkerTransport(const WorkerTransport&) = delete;
     WorkerTransport& operator=(const WorkerTransport&) = delete;
 
-    Bytes receive_assignment();
-    void send_gradient(const Bytes& gradient_result);
+    Bytes receive_worker_payload();
+    void send_master_payload(const Bytes& master_payload);
 
 private:
     int sock_ = -1;
@@ -48,6 +47,5 @@ private:
     sockaddr_in master_address_ {};
 };
 
-}  // namespace API_RDT_UDP
 
 #endif
