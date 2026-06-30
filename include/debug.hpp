@@ -116,17 +116,9 @@ inline std::string visualHeader(const Datagram& d)
     return s;
 }
 
-// true  -> el relleno se imprime completo, '#' repetido hasta llenar
-//          PRINTED_DATAGRAM_WIDTH (comportamiento original)
-// false -> el relleno se compacta a "#...#" (solo unos pocos '#', "...",
-//          y otro '#'), util cuando el datagrama es mucho mas chico que
-//          el ancho fijo y no quieres ver una fila larga de '#'.
-constexpr bool VERBOSE_PADDING = false;
 
-// Construye la representación de exactamente PRINTED_DATAGRAM_WIDTH (500)
-// caracteres: header + payload (imprimible, '.' para no imprimibles) +
-// relleno con '#' hasta completar el ancho fijo cuando el datagrama
-// (o su último fragmento) no llena el espacio disponible.
+constexpr bool VERBOSE_PADDING = true;
+
 inline std::string buildPrintableDatagram(const Datagram& datagram)
 {
     std::string packet = visualHeader(datagram);
