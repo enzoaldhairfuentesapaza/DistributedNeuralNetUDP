@@ -1,8 +1,17 @@
 import torch
-import dnn_udp
+#import dnn_udp
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.append(str(ROOT / "python"))
+
+from distributed_transport import DistributedTransport
 
 from model import MulticlassClassifier
 
@@ -14,7 +23,7 @@ from serialization import (
 from gradient_utils import average_gradients
 
 
-NUM_WORKERS = 10
+NUM_WORKERS = 1
 NUM_EPOCHS = 20
 
 model = MulticlassClassifier(
@@ -26,11 +35,12 @@ optimizer = torch.optim.Adam(
     model.parameters(),
     lr=0.001
 )
-
+transport = DistributedTransport()
 criterion = torch.nn.CrossEntropyLoss()
+
 loss_history = []
 
-csv_path = "Dataset of Diabetes.csv"
+csv_path = ROOT / "dataset" / "Dataset of Diabetes.csv"
 
 df = pd.read_csv(
     csv_path,
@@ -111,9 +121,8 @@ for epoch in range(NUM_EPOCHS):
 
     print("Sending work...")
 
-    results = dnn_udp.exchange(
-        assignments
-    )
+    transport = DistributedTransport()
+    results = transport.exchange(assignments)
 
     print(
         "Received:",
@@ -166,6 +175,7 @@ for epoch in range(NUM_EPOCHS):
         "Loss:",
         epoch_loss.item()
     )
+    results = transport.exchange(assignments)
 
 plt.figure(
     figsize=(8, 4)
