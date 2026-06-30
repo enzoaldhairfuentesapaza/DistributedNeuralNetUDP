@@ -1,6 +1,4 @@
 #include "protocol.hpp"
-#include "debug.hpp"
-#include "fault_injection.hpp"
 
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -13,52 +11,11 @@ bool send_datagram(int sock, const sockaddr_in& address, const Datagram& datagra
         return false;
     }
 
-    // ----------------------------------------------------------------
-    // SIMULACION DE FALLAS (solo aplica a datagramas DATA enviados por
-    // un worker hacia el master, es decir, GRADIENT_RESULT). Si esta
-    // desactivado (FAULT_INJECTION_ENABLED = false) o el datagrama no
-    // corresponde a un worker objetivo, estas funciones no hacen nada.
-    // ----------------------------------------------------------------
-    const uint16_t sender_id = datagram.sender_id;
-
-    if (sender_id >= FIRST_WORKER_ID && sender_id <= LAST_WORKER_ID) {
-        // 1) Perdida de paquete: el datagrama se descarta, nunca se envia.
-        if (fault_should_drop_packet(sender_id, datagram)) {
-            return true;  // se reporta como "enviado" para no romper el
-                          // flujo del protocolo; en realidad nunca sale.
-        }
-
-        // 2) Paquete tardio: se retiene antes de enviarse.
-        if (fault_should_delay_packet(sender_id, datagram)) {
-            fault_apply_delay();
-        }
-
-        // 3) Dato corrupto: se corrompe el payload antes de calcular CRC32.
-        Datagram mutable_copy = datagram;
-        if (fault_should_corrupt_packet(sender_id, mutable_copy)) {
-            const std::vector<uint8_t> corrupt_bytes = serialize_datagram(mutable_copy);
-            const ssize_t corrupt_sent = sendto(sock, corrupt_bytes.data(), corrupt_bytes.size(), 0,
-                                                reinterpret_cast<const sockaddr*>(&address),
-                                                sizeof(address));
-            const bool corrupt_ok = corrupt_sent == static_cast<ssize_t>(corrupt_bytes.size());
-            if (corrupt_ok) {
-                printDatagram(mutable_copy, /*sent=*/true);
-            }
-            return corrupt_ok;
-        }
-    }
-
     const std::vector<uint8_t> bytes = serialize_datagram(datagram);
     const ssize_t sent = sendto(sock, bytes.data(), bytes.size(), 0,
                                 reinterpret_cast<const sockaddr*>(&address),
                                 sizeof(address));
-    const bool ok = sent == static_cast<ssize_t>(bytes.size());
-
-    if (ok) {
-        printDatagram(datagram, /*sent=*/true);
-    }
-
-    return ok;
+    return sent == static_cast<ssize_t>(bytes.size());
 }
 
 bool same_address(const sockaddr_in& a, const sockaddr_in& b) {
@@ -82,9 +39,6 @@ bool receive_datagram(int sock, Datagram& datagram, sockaddr_in& from, bool& cor
         corrupt = true;
         return false;
     }
-
-    printDatagram(datagram, /*sent=*/false);
-
     return true;
 }
 

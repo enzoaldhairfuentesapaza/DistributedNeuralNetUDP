@@ -414,19 +414,23 @@ bool run_event_loop(int sock, std::vector<WorkerSession>& sessions) {
 
 namespace API_RDT_UDP {
 
-std::vector<WorkerEndpoint> default_workers() {
-    return {
-        {"127.0.0.1", 9001, 1},
-        {"127.0.0.1", 9002, 2},
-        {"127.0.0.1", 9003, 3},
-        {"127.0.0.1", 9004, 4},
-        {"127.0.0.1", 9005, 5},
-        {"127.0.0.1", 9006, 6},
-        {"127.0.0.1", 9007, 7},
-        {"127.0.0.1", 9008, 8},
-        {"127.0.0.1", 9009, 9},
-        {"127.0.0.1", 9010, 10},
-    };
+std::vector<WorkerEndpoint> build_workers(uint16_t num_workers)
+{
+    if (num_workers < 1 || num_workers > 10)
+    {
+        throw std::runtime_error("Number of workers must be between 1 and 10.");
+    }
+    std::vector<WorkerEndpoint> workers;
+    for (uint16_t id = 1; id <= num_workers; ++id)
+    {
+        workers.push_back(
+        {
+            "127.0.0.1",
+            static_cast<uint16_t>(9000 + id),
+            id
+        });
+    }
+    return workers;
 }
 
 MasterTransport::MasterTransport(std::vector<WorkerEndpoint> workers)

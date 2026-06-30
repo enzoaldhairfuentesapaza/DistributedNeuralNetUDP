@@ -9,6 +9,7 @@
 #include <iterator>
 #include <map>
 #include <string>
+#include "debug.hpp"
 
 using namespace std;
 
@@ -30,14 +31,18 @@ bool write_file(const string& path, const API_RDT_UDP::Bytes& data) {
     return file.good();
 }
 
-int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        cerr << "usage: ./master <assignments_dir> <results_dir>\n";
+int main(int argc, char* argv[]) 
+{
+    if (argc != 4)
+    {
+        std::cerr << "Usage: " << argv[0] << " <assignments_dir> <results_dir> <num_workers>\n";
+
         return 1;
     }
 
     const string assignments_dir = argv[1];
     const string results_dir = argv[2];
+    const uint16_t num_workers = static_cast<uint16_t>(std::stoi(argv[3]));
 
     struct stat info {};
     const bool results_dir_exists = stat(results_dir.c_str(), &info) == 0;
@@ -48,7 +53,11 @@ int main(int argc, char* argv[]) {
     }
 
     map<uint16_t, API_RDT_UDP::Bytes> assignments;
-    for (const API_RDT_UDP::WorkerEndpoint& worker : API_RDT_UDP::default_workers()) {
+
+    const auto workers = API_RDT_UDP::build_workers(num_workers);
+
+    for (const API_RDT_UDP::WorkerEndpoint& worker : workers)
+    {
         const string assignment_path = assignments_dir + "/worker_" + to_string(worker.id) + ".bin";
         API_RDT_UDP::Bytes assignment;
         if (!read_file(assignment_path, assignment)) {
@@ -61,7 +70,7 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        API_RDT_UDP::MasterTransport master;
+        API_RDT_UDP::MasterTransport master(workers);
         const map<uint16_t, API_RDT_UDP::Bytes> results = master.exchange(assignments);
 
         for (const auto& result : results) {

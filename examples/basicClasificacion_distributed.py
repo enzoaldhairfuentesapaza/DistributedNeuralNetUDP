@@ -51,14 +51,14 @@ class MulticlassClassifier(nn.Module):
 # --------------------------------------------------
 NUM_WORKERS = 10
 NUM_EPOCHS = 360  # Mantenemos los 360 del código original
-INPUT_DIM = 14
+INPUT_DIM = 11
 NUM_CLASSES = 3
 BATCH_SIZE = 50
 
 # --------------------------------------------------
 # CARGAR DATASET
 # --------------------------------------------------
-csv_path = "Dataset of Diabetes.csv"
+csv_path = "../dataset/Dataset of Diabetes.csv"
 
 df = pd.read_csv(
     csv_path,

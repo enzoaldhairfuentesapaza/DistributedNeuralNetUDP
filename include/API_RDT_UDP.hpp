@@ -18,11 +18,11 @@ struct WorkerEndpoint {
     uint16_t id;
 };
 
-std::vector<WorkerEndpoint> default_workers();
+std::vector<WorkerEndpoint> build_workers(uint16_t num_workers);
 
 class MasterTransport {
 public:
-    explicit MasterTransport(std::vector<WorkerEndpoint> workers = default_workers());
+    explicit MasterTransport(std::vector<WorkerEndpoint> workers);
 
     std::map<uint16_t, Bytes> exchange(const std::map<uint16_t, Bytes>& assignments) const;
 

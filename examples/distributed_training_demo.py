@@ -1,4 +1,5 @@
 import torch
+from torch.utils.data import TensorDataset, random_split
 #import dnn_udp
 
 import pandas as pd
@@ -8,34 +9,24 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-
 sys.path.append(str(ROOT / "python"))
 
 from distributed_transport import DistributedTransport
-
 from model import MulticlassClassifier
-
 from serialization import (
     serialize_assignment,
     deserialize_gradient
 )
-
 from gradient_utils import average_gradients
 
+torch.manual_seed(42)
+np.random.seed(42)
 
-NUM_WORKERS = 1
-NUM_EPOCHS = 20
 
-model = MulticlassClassifier(
-    input_dim=14,
-    num_classes=3
-)
+NUM_WORKERS = 4
+NUM_EPOCHS = 1
 
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=0.001
-)
-transport = DistributedTransport()
+transport = DistributedTransport(NUM_WORKERS)
 criterion = torch.nn.CrossEntropyLoss()
 
 loss_history = []
@@ -48,19 +39,34 @@ df = pd.read_csv(
     skiprows=1
 )
 
-input_dim = 14
+input_dim = 11
 num_classes = 3
 
-X_np = df.iloc[:, :input_dim].values.astype(np.float32)
+model = MulticlassClassifier(input_dim=input_dim, num_classes=num_classes)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0003) # 0.001
 
+X_np = df.iloc[:, :input_dim].values.astype(np.float32)
 y_np = df.iloc[:, -num_classes:].values.astype(np.float32)
 
 X = torch.tensor(X_np)
-
 y = torch.tensor(y_np)
+
+dataset = TensorDataset(X, y)
+
+train_size = int(0.8 * len(dataset))
+test_size = len(dataset) - train_size
+
+train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
+
+train_X = train_dataset[:][0]
+train_y = train_dataset[:][1]
+
+test_X = test_dataset[:][0]
+test_y = test_dataset[:][1]
 
 print("X:", X.shape)
 print("y:", y.shape)
+
 # -----------------------------
 # LOSS ANTES
 # -----------------------------
@@ -89,12 +95,9 @@ for epoch in range(NUM_EPOCHS):
 
     assignments = {}
 
-    chunk_size = len(X) // NUM_WORKERS
+    chunk_size = len(train_X) // NUM_WORKERS
 
-    for worker_id in range(
-        1,
-        NUM_WORKERS + 1
-    ):
+    for worker_id in range(1,NUM_WORKERS + 1):
 
         start = (
             worker_id - 1
@@ -108,8 +111,8 @@ for epoch in range(NUM_EPOCHS):
 
         assignment = {
             "worker_id": worker_id,
-            "X": X[start:end],
-            "y": y[start:end],
+            "X": train_X[start:end],
+            "y": train_y[start:end],
             "model_state": model.state_dict()
         }
 
@@ -121,7 +124,6 @@ for epoch in range(NUM_EPOCHS):
 
     print("Sending work...")
 
-    transport = DistributedTransport()
     results = transport.exchange(assignments)
 
     print(
@@ -139,10 +141,10 @@ for epoch in range(NUM_EPOCHS):
         ] = deserialize_gradient(
             payload
         )
-
-    avg_grads = average_gradients(
-        decoded_results
-    )
+    
+    if not decoded_results:
+        raise RuntimeError("No gradients were received from workers.")
+    avg_grads = average_gradients(decoded_results)
 
     optimizer.zero_grad()
 
@@ -160,11 +162,11 @@ for epoch in range(NUM_EPOCHS):
 
     with torch.no_grad():
 
-        logits, _ = model(X)
+        logits, _ = model(test_X)
 
         epoch_loss = criterion(
             logits,
-            y
+            test_y
         )
 
     loss_history.append(
@@ -175,7 +177,6 @@ for epoch in range(NUM_EPOCHS):
         "Loss:",
         epoch_loss.item()
     )
-    results = transport.exchange(assignments)
 
 plt.figure(
     figsize=(8, 4)

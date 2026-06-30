@@ -45,7 +45,7 @@ PYTHON_MODULE := $(BINDINGS_DIR)/dnn_udp$(PYTHON_SUFFIX)
 
 .PHONY: all clean help library bindings executables
 
-all: $(LIB_NAME) $(MASTER_BIN) $(WORKER_BIN) $(PYTHON_MODULE)
+all: $(LIB_NAME) $(MASTER_BIN) $(WORKER_BIN)
 
 # Create directories if necessary
 
@@ -59,8 +59,9 @@ $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 # Compile library objects
+HEADERS := $(wildcard $(INC_DIR)/*.hpp)
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Static library
@@ -72,12 +73,12 @@ library: $(LIB_NAME)
 
 # Master
 
-$(MASTER_BIN): $(MASTER_SRC) $(LIB_NAME) | $(BIN_DIR)
+$(MASTER_BIN): $(MASTER_SRC) $(LIB_NAME) $(HEADERS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $< $(LIB_NAME) -o $@
 
 # Worker
 
-$(WORKER_BIN): $(WORKER_SRC) $(LIB_NAME) | $(BIN_DIR)
+$(WORKER_BIN): $(WORKER_SRC) $(LIB_NAME) $(HEADERS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $< $(LIB_NAME) -o $@
 
 executables: $(MASTER_BIN) $(WORKER_BIN)

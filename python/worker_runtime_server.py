@@ -25,10 +25,6 @@ def main():
     assignment_file = sys.argv[1]
     gradient_file = sys.argv[2]
 
-    print(
-        f"Reading {assignment_file}"
-    )
-
     with open(
         assignment_file,
         "rb"
@@ -41,15 +37,13 @@ def main():
     )
 
     print(
-        f"Worker {assignment['worker_id']} processing..."
+        f"Worker {assignment['worker_id']} processing assignment..."
     )
 
     result = compute_gradients(
         assignment
     )
     
-    print(result.keys())
-    print(result["gradients"].keys())
 
     gradient_bytes = serialize_gradient(
         result
@@ -57,7 +51,7 @@ def main():
 
     with open(gradient_file,"wb") as f:
         f.write(gradient_bytes)
-    print(f"Wrote {gradient_file}")
+    print(f"Wrote {gradient_file}: gradient written.")
 
     return 0
 

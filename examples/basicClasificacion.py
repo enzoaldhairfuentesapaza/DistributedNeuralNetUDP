@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, random_split
+from pathlib import Path
 
 import torch.optim as optim
 import torch.distributions as dist
@@ -40,7 +41,7 @@ class MulticlassClassifier(nn.Module):
 # Generate synthetic heteroscedastic multiclass data
 torch.manual_seed(42)
 num_samples = 1000
-input_dim = 14
+input_dim = 11
 num_classes = 3
 batch_size = 50
 
@@ -52,7 +53,8 @@ y = torch.nn.functional.one_hot(active_indices, num_classes=num_classes).float()
 #y = torch.randint(0, num_classes, (num_samples * num_classes,)).view(num_samples, num_classes)
 
 # Load dataset from CSV
-csv_path = "Dataset of Diabetes.csv"  # replace with your actual CSV file path   1000,13,3,50
+ROOT = Path(__file__).resolve().parents[1]
+csv_path = ROOT / "dataset" / "Dataset of Diabetes.csv"
 
 df = pd.read_csv(csv_path,header=None, skiprows=1)
 
@@ -77,7 +79,7 @@ train_size = int(0.8 * len(dataset))
 test_size = len(dataset) - train_size
 train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False) #true
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
 # Model setup
@@ -137,7 +139,6 @@ for epoch in range(num_epochs):
 
 
 
-
 # Plot training loss over epochs
 plt.figure(figsize=(8, 4))
 plt.plot(train_tracker, marker='o')
@@ -147,23 +148,3 @@ plt.ylabel("Loss")
 plt.grid(True)
 plt.tight_layout()
 plt.show()
-
-import matplotlib.pyplot as plt
-# %matplotlib inline
-plt.plot(train_tracker, label='Training loss')
-plt.plot(test_tracker, label='Test loss')
-plt.plot(accuracy_tracker, label='Test accuracy')
-plt.legend()
-
-
-# Display confusion matrix
-cm = confusion_matrix(y_true, y_pred)
-disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=list(range(num_classes)))
-disp.plot(cmap=plt.cm.Blues)
-plt.title("Confusion Matrix")
-plt.tight_layout()
-plt.show()
-
-# Print classification metrics
-print("\nClassification Report:")
-print(classification_report(y_true, y_pred, digits=3))

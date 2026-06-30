@@ -9,6 +9,7 @@
 #include <iterator>
 #include <string>
 #include <sstream>
+#include "debug.hpp"
 
 using namespace std;
 
@@ -61,11 +62,10 @@ int main(int argc, char* argv[]) {
         {
             const API_RDT_UDP::Bytes assignment =
                 worker.receive_assignment();
-
-            cout
-                << "Worker "
-                << worker_id
-                << ": received WORK_ASSIGNMENT ("
+            
+            printWorkerHeader(worker_id);
+            std::cout
+                << "Received WORK_ASSIGNMENT ("
                 << assignment.size()
                 << " bytes)\n";
 
@@ -97,7 +97,7 @@ int main(int argc, char* argv[]) {
 
             command
                 << ".venv/bin/python "
-                << "worker_runtime_server.py "
+                << "python/worker_runtime_server.py "
                 << assignment_output_path
                 << " "
                 << gradient_path;
