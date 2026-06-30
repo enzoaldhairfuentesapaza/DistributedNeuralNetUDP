@@ -1,54 +1,95 @@
+# Distributed Neural Network UDP - Makefile
+
+# ============================================================
+
+# Compiler configuration
+
 CXX ?= g++
+AR  ?= ar
 
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2
+CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -Iinclude
 
-AR ?= ar
+PYTHON_INCLUDES := $(shell python3 -m pybind11 --includes)
+PYTHON_SUFFIX   := $(shell python3-config --extension-suffix)
 
-PYTHON_INCLUDES := $(shell python -m pybind11 --includes)
-PYTHON_SUFFIX := $(shell python3-config --extension-suffix)
+# Directories
 
-.PHONY: all clean
+SRC_DIR      := src
+INC_DIR      := include
+APP_DIR      := apps
+BUILD_DIR    := build
+LIB_DIR      := lib
+BIN_DIR      := bin
+BINDINGS_DIR := bindings
 
-all: libAPI_RDT_UDP.a master worker dnn_udp$(PYTHON_SUFFIX)
+# Library
 
-# -----------------------------
-# LIBRERIA RDT
-# -----------------------------
+LIB_NAME := $(LIB_DIR)/libAPI_RDT_UDP.a
 
-API_RDT_UDP.o: API_RDT_UDP.cpp API_RDT_UDP.hpp protocol.hpp datagram.hpp
-	$(CXX) $(CXXFLAGS) -c API_RDT_UDP.cpp -o API_RDT_UDP.o
+LIB_SRC := $(wildcard $(SRC_DIR)/*.cpp)
+LIB_OBJ := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(LIB_SRC))
 
-protocol.o: protocol.cpp protocol.hpp datagram.hpp
-	$(CXX) $(CXXFLAGS) -c protocol.cpp -o protocol.o
+# Executables
 
-libAPI_RDT_UDP.a: API_RDT_UDP.o protocol.o
-	$(AR) rcs libAPI_RDT_UDP.a API_RDT_UDP.o protocol.o
+MASTER_SRC := $(APP_DIR)/master.cpp
+WORKER_SRC := $(APP_DIR)/worker.cpp
 
-# -----------------------------
-# MASTER
-# -----------------------------
+MASTER_BIN := $(BIN_DIR)/master
+WORKER_BIN := $(BIN_DIR)/worker
 
-master: master.cpp libAPI_RDT_UDP.a
-	$(CXX) $(CXXFLAGS) master.cpp libAPI_RDT_UDP.a -o master
+# Python binding
 
-# -----------------------------
-# WORKER
-# -----------------------------
+PYTHON_MODULE := $(BINDINGS_DIR)/dnn_udp$(PYTHON_SUFFIX)
 
-worker: worker.cpp libAPI_RDT_UDP.a
-	$(CXX) $(CXXFLAGS) worker.cpp libAPI_RDT_UDP.a -o worker
+# Default target
 
-# -----------------------------
-# PYBIND11
-# -----------------------------
+.PHONY: all clean help library bindings executables
 
-dnn_udp$(PYTHON_SUFFIX): \
-	dnn_udp_bindings.cpp \
-	API_RDT_UDP.cpp \
-	protocol.cpp \
-	API_RDT_UDP.hpp \
-	protocol.hpp \
-	datagram.hpp
+all: $(LIB_NAME) $(MASTER_BIN) $(WORKER_BIN) $(PYTHON_MODULE)
+
+# Create directories if necessary
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+$(LIB_DIR):
+	mkdir -p $(LIB_DIR)
+
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
+
+# Compile library objects
+
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Static library
+
+$(LIB_NAME): $(LIB_OBJ) | $(LIB_DIR)
+	$(AR) rcs $@ $^
+
+library: $(LIB_NAME)
+
+# Master
+
+$(MASTER_BIN): $(MASTER_SRC) $(LIB_NAME) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $< $(LIB_NAME) -o $@
+
+# Worker
+
+$(WORKER_BIN): $(WORKER_SRC) $(LIB_NAME) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $< $(LIB_NAME) -o $@
+
+executables: $(MASTER_BIN) $(WORKER_BIN)
+
+# Python bindings (pybind11)
+
+$(PYTHON_MODULE): \
+	$(BINDINGS_DIR)/dnn_udp_bindings.cpp \
+	$(LIB_SRC) \
+	$(INC_DIR)/API_RDT_UDP.hpp \
+	$(INC_DIR)/protocol.hpp \
+	$(INC_DIR)/datagram.hpp
 
 	$(CXX) \
 		-O3 \
@@ -56,20 +97,35 @@ dnn_udp$(PYTHON_SUFFIX): \
 		-shared \
 		-std=c++17 \
 		-fPIC \
+		-I$(INC_DIR) \
 		$(PYTHON_INCLUDES) \
-		dnn_udp_bindings.cpp \
-		API_RDT_UDP.cpp \
-		protocol.cpp \
-		-o dnn_udp$(PYTHON_SUFFIX)
+		$(BINDINGS_DIR)/dnn_udp_bindings.cpp \
+		$(SRC_DIR)/API_RDT_UDP.cpp \
+		$(SRC_DIR)/protocol.cpp \
+		-o $(PYTHON_MODULE)
 
-# -----------------------------
-# CLEAN
-# -----------------------------
+bindings: $(PYTHON_MODULE)
+
+# Help
+
+help:
+	@echo ""
+	@echo "Distributed Neural Network UDP"
+	@echo ""
+	@echo "Available targets:"
+	@echo "  make              Build everything"
+	@echo "  make library      Build static library"
+	@echo "  make executables  Build master and worker"
+	@echo "  make bindings     Build Python module"
+	@echo "  make clean        Remove generated files"
+	@echo ""
+
+# Clean
 
 clean:
-	rm -f \
-		*.o \
-		*.a \
-		master \
-		worker \
-		*.so
+	rm -f $(BUILD_DIR)/*.o
+	rm -f $(LIB_DIR)/*.a
+	rm -f $(BIN_DIR)/master
+	rm -f $(BIN_DIR)/worker
+	rm -f $(BINDINGS_DIR)/*.so
+	rm -f $(BINDINGS_DIR)/*.pyd
