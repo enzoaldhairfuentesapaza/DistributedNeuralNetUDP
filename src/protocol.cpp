@@ -33,16 +33,29 @@ bool send_datagram(int sock, const sockaddr_in& address, const Datagram& datagra
             fault_apply_delay();
         }
 
-        // 3) Dato corrupto: se corrompe el payload antes de calcular CRC32.
-        Datagram mutable_copy = datagram;
-        if (fault_should_corrupt_packet(sender_id, mutable_copy)) {
-            const std::vector<uint8_t> corrupt_bytes = serialize_datagram(mutable_copy);
+        // 3) Dato corrupto: se corrompe el payload DESPUES de serializar
+        //    (es decir, despues de que el CRC32 ya fue calculado sobre los
+        //    bytes correctos). Asi el CRC que viaja queda desincronizado
+        //    del contenido real, y el receptor (que recalcula el CRC sobre
+        //    lo que recibe) debe detectar la inconsistencia y rechazarlo.
+        if (fault_should_corrupt_packet(sender_id, datagram)) {
+            std::vector<uint8_t> corrupt_bytes = serialize_datagram(datagram);
+            fault_corrupt_serialized_bytes(corrupt_bytes);
+
             const ssize_t corrupt_sent = sendto(sock, corrupt_bytes.data(), corrupt_bytes.size(), 0,
                                                 reinterpret_cast<const sockaddr*>(&address),
                                                 sizeof(address));
             const bool corrupt_ok = corrupt_sent == static_cast<ssize_t>(corrupt_bytes.size());
             if (corrupt_ok) {
-                printDatagram(mutable_copy, /*sent=*/true);
+                // Reconstruye un Datagram a partir de los bytes REALMENTE
+                // enviados (ya corruptos) solo para fines de impresion, de
+                // modo que el log muestre el payload alterado tal cual viajo
+                // por la red (y no el contenido original/limpio).
+                Datagram printed_view = datagram;
+                if (corrupt_bytes.size() > HEADER_SIZE) {
+                    printed_view.payload.assign(corrupt_bytes.begin() + HEADER_SIZE, corrupt_bytes.end());
+                }
+                printDatagram(printed_view, /*sent=*/true);
             }
             return corrupt_ok;
         }
@@ -193,11 +206,17 @@ bool send_object(int sock,
                                                object_type,
                                                next,
                                                total_fragments);
+            if (retries > 0) {
+                // Esta no es la primera vez que se intenta enviar este
+                // fragmento: es una retransmision tras timeout.
+                fault_log_retransmit(sender_id, transfer_id, data.seq);
+            }
             if (!send_datagram(sock, address, data)) {
                 return false;
             }
             ++next;
         }
+        const uint32_t last_sent_seq = next > 0 ? next - 1 : 0;  // ultimo fragmento mandado en este intento de ventana
 
         uint32_t ack = ACK_NONE;
         if (wait_for_ack(sock, address, transfer_id, receiver_id, sender_id, ack)) {
@@ -205,6 +224,7 @@ bool send_object(int sock,
                 base = 0;
                 next = 0;
             } else if (ack >= base && ack < total_fragments) {
+                fault_log_recovered(sender_id, transfer_id, ack, ack);
                 base = ack + 1;
                 retries = 0;
             }
@@ -212,6 +232,7 @@ bool send_object(int sock,
         }
 
         ++retries;
+        fault_log_timeout_detected(sender_id, transfer_id, last_sent_seq, retries);
         if (retries > MAX_RETRIES) {
             return false;
         }

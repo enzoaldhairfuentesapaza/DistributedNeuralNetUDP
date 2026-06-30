@@ -19,6 +19,7 @@ constexpr bool DEBUG_DATAGRAMS = true;
 // true  -> imprime TODOS los datagramas | false -> imprime solo el primero y el último de cada transferencia
 constexpr bool DEBUG_ALL_DATAGRAMS = true;
 
+// Ancho fijo (en caracteres) del datagrama impreso, igual que en server.cpp/client.cpp
 constexpr size_t PRINTED_DATAGRAM_WIDTH = 500;
 
 inline bool shouldPrintFragment(
@@ -115,6 +116,13 @@ inline std::string visualHeader(const Datagram& d)
     return s;
 }
 
+// true  -> el relleno se imprime completo, '#' repetido hasta llenar
+//          PRINTED_DATAGRAM_WIDTH (comportamiento original)
+// false -> el relleno se compacta a "#...#" (solo unos pocos '#', "...",
+//          y otro '#'), util cuando el datagrama es mucho mas chico que
+//          el ancho fijo y no quieres ver una fila larga de '#'.
+constexpr bool VERBOSE_PADDING = false;
+
 // Construye la representación de exactamente PRINTED_DATAGRAM_WIDTH (500)
 // caracteres: header + payload (imprimible, '.' para no imprimibles) +
 // relleno con '#' hasta completar el ancho fijo cuando el datagrama
@@ -132,9 +140,25 @@ inline std::string buildPrintableDatagram(const Datagram& datagram)
     }
 
     if (packet.size() < PRINTED_DATAGRAM_WIDTH)
-        packet.append(PRINTED_DATAGRAM_WIDTH - packet.size(), '#');
+    {
+        const size_t padding_needed = PRINTED_DATAGRAM_WIDTH - packet.size();
+
+        if (VERBOSE_PADDING || padding_needed <= 5)
+        {
+            // Relleno completo (o ya es tan corto que no vale la pena
+            // compactarlo): comportamiento original.
+            packet.append(padding_needed, '#');
+        }
+        else
+        {
+            // Relleno compacto: "#...#" en vez de '#' repetido.
+            packet += "#...#";
+        }
+    }
     else if (packet.size() > PRINTED_DATAGRAM_WIDTH)
+    {
         packet.resize(PRINTED_DATAGRAM_WIDTH);
+    }
 
     return packet;
 }
